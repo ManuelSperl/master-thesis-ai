@@ -10,6 +10,20 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from sklearn.metrics.pairwise import cosine_similarity
 
+import importlib
+
+import auxiliary_methods.tb_logger
+importlib.reload(auxiliary_methods.tb_logger)
+from auxiliary_methods.tb_logger import TensorBoardLogger
+
+import auxiliary_methods.utils
+importlib.reload(auxiliary_methods.utils)
+from auxiliary_methods.utils import create_env
+
+import implicit_q_learning_iql.iql_model
+importlib.reload(implicit_q_learning_iql.iql_model)
+from implicit_q_learning_iql.iql_model import IQLModel
+
 def adjust_learning_rate(optimizer, decay_factor):
     """
     Adjusts the learning rate of the optimizer by a specified decay factor.
@@ -139,7 +153,7 @@ def train_one_IQL_epoch(agent, loader):
 
     return np.mean(policy_losses), np.mean(critic1_losses), np.mean(critic2_losses), np.mean(value_losses), avg_pred_q_values, avg_target_q_values
 
-def train_iql(dataloaders, epochs, trials, dataset, loggerpath):
+def train_iql(dataloaders, epochs, trials, dataset, loggerpath, env_id, seed, device):
     """
     Trains an Implicit Q-Learning (IQL) agent on the specified dataset.
 
@@ -159,8 +173,11 @@ def train_iql(dataloaders, epochs, trials, dataset, loggerpath):
         } for trial in range(trials)
     }
 
+    print("1")
+    print(dataset)
     # loop through datasets
     for dataset_name, loaders in ((d, l) for d, l in dataloaders.items() if d == dataset):
+        print("2")
         print(f"Training IQL on {dataset_name}")
 
         # lists to store losses and rewards for plotting
@@ -173,18 +190,19 @@ def train_iql(dataloaders, epochs, trials, dataset, loggerpath):
             # ------- Setup Phase -------
             # logger setup
             iql_logger = TensorBoardLogger('iql_training_logs', dataset_path=loggerpath)
+            print("TensorBoard logging directory:")
 
             # create the Enviornment
             iql_env, iql_action_dim, iql_state_dim = create_env(
                 logger=iql_logger,
-                env_id=ENV_ID,
-                capture_video=True,
-                seed=SEED,
+                env_id=env_id,
+                capture_video=False, #TODO: True
+                seed=seed,
                 trial_number=f'{trial+1}'
                 )
 
             # reinitialize the IQL model for each dataset
-            iql_agent = IQLAgent(state_size=iql_state_dim,
+            iql_agent = IQLModel(state_size=iql_state_dim,
                                 action_size=iql_action_dim,
                                 learning_rate=3e-4,
                                 hidden_size=256,
@@ -192,7 +210,8 @@ def train_iql(dataloaders, epochs, trials, dataset, loggerpath):
                                 temperature=0.1,
                                 expectile=0.7,
                                 device=device,
-                                trial_idx=trial
+                                trial_idx=trial,
+                                global_seed=seed
                                 )
 
             # initialize optimizers with learning rates and possibly other hyperparameters
