@@ -1,0 +1,6 @@
+# Ignore pickles
+*.pkl
+**/*.pkl
+
+# Ignore Models 
+*.zip
