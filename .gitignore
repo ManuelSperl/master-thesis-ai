@@ -4,3 +4,8 @@
 
 # Ignore Models 
 *.zip
+
+# Ignore logs
+behavioral_cloning_bc/bc_logs/
+implicit_q_learning_iql/iql_logs/
+deep_q_network_dqn/dqn_logs/

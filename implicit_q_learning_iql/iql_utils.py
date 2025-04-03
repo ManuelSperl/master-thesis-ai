@@ -1,11 +1,18 @@
+# iql_utils.py 
+
 # ----- PyTorch imports -----
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import gymnasium as gym
+import time
 
 # ----- Python imports -----
 import numpy as np
+import gc
 import pandas as pd
+import pickle
+import os
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from sklearn.metrics.pairwise import cosine_similarity
@@ -16,154 +23,226 @@ import auxiliary_methods.tb_logger
 importlib.reload(auxiliary_methods.tb_logger)
 from auxiliary_methods.tb_logger import TensorBoardLogger
 
+import datasets.dataset_utils
+importlib.reload(datasets.dataset_utils)
+
+from datasets.dataset_utils import set_all_seeds
+
 import auxiliary_methods.utils
 importlib.reload(auxiliary_methods.utils)
-from auxiliary_methods.utils import create_env
+from auxiliary_methods.utils import create_env, save_return_stats
 
 import implicit_q_learning_iql.iql_model
 importlib.reload(implicit_q_learning_iql.iql_model)
 from implicit_q_learning_iql.iql_model import IQLModel
 
-def adjust_learning_rate(optimizer, decay_factor):
+def adjust_learning_rate(agent, decay_factor):
     """
-    Adjusts the learning rate of the optimizer by a specified decay factor.
-
-    :param optimizer: optimizer whose learning rate needs adjustment
-    :param decay_factor: factor by which to multiply the current learning rate
+    Adjusts the learning rate of all optimizers within an agent by a specified decay factor.
     """
-    for param_group in optimizer.param_groups:
-        old_lr = param_group['lr'] # get current learning rate
-        new_lr = old_lr * decay_factor
-        param_group['lr'] = new_lr # set new learning rate
+    for optimizer in [
+        agent.actor_optimizer, 
+        agent.critic1_optimizer, 
+        agent.critic2_optimizer, 
+        agent.value_optimizer
+    ]:
+        for param_group in optimizer.param_groups:
+            param_group['lr'] *= decay_factor
 
-def tune_IQL(agent, data_loader):
-    """
-    Tunes the IQL agent using the provided data loader for the tuning dataset, calculating the mean squared error loss.
-
-    :param agent: IQL agent being tuned
-    :param data_loader: dataLoader containing tuning dataset
-
-    :return: average loss computed over tuning dataset
-    """
-    total_loss = 0.0
-    total_count = 0
-
-    agent.eval()  # set agent to evaluation mode
-
-    criterion = nn.MSELoss()  # define a loss function, e.g. MSE for action prediction
-
-    with torch.no_grad():
-        for states, true_actions, rewards, _, _ in data_loader:
-            states = states.to(agent.device)
-            true_actions = true_actions.to(agent.device)
-
-            # predict actions using policy
-            predicted_actions = agent.get_action(states, eval=True)
-
-            # convert predicted actions to a tensor (if they are numpy arrays)
-            if isinstance(predicted_actions, np.ndarray):
-                predicted_actions = torch.tensor(predicted_actions).to(agent.device)
-
-            # calculate MSE loss between predicted and true actions
-            loss = criterion(predicted_actions, true_actions)
-
-            # sum up rewards and loss
-            total_loss += loss.item()
-            total_count += len(rewards)
-
-    # calculate average loss
-    avg_loss = total_loss / total_count
-
-    return avg_loss
-
-def evaluate(agent, env, num_episodes):
-    """
-    Evaluates the IQL agent in a specified environment over a number of episodes.
-
-    :param agent: IQL agent to evaluate
-    :param env: environment in which to evaluate the agent
-    :param num_episodes: number of episodes to run for evaluation
-
-    :return: dictionary containing average reward and episode length
-    """
-    stats = {'reward': [], 'length': []}
-
-    # loop through episodes
-    for _ in range(num_episodes):
-        observation = env.reset()
-        done = False
-        episode_reward = 0
-        episode_length = 0
-
-        # get action, take action, and update statistics
-        while not done:
-            action = agent.get_action(observation, eval=True)
-            observation, reward, done, _ = env.step(action)
-
-            episode_reward += reward
-            episode_length += 1
-
-        stats['reward'].append(episode_reward)
-        stats['length'].append(episode_length)
-
-    # calculate and return average statistics
-    stats = {k: np.mean(v) for k, v in stats.items()}
-
-    return stats
 
 def train_one_IQL_epoch(agent, loader):
     """
     Conducts one epoch of training for an IQL agent using the provided data loader.
-
-    :param agent: The IQL agent to train
-    :param loader: DataLoader containing the training data
-
-    :return: A tuple containing the average losses and Q-values
     """
-    # initialize lists to store losses and Q-values
-    policy_losses, critic1_losses, critic2_losses, value_losses = [], [], [], []
+    agent.train()
+
+    # lists to store losses and Q-values
+    actor_losses, critic1_losses, critic2_losses, value_losses = [], [], [], []
     avg_pred_q_values, avg_target_q_values = [], []
 
-    agent.train() # set agent to training mode
+    if len(loader) == 0:
+        return 0.0  # ensure we don't divide by zero
 
-    # loop through the data loader
     for states, actions, rewards, next_states, dones in loader:
-        states = states.to(agent.device)
-        actions = actions.to(agent.device)
+        states, actions = states.to(agent.device), actions.to(agent.device)
         rewards = rewards.unsqueeze(1).to(agent.device)
-        next_states = next_states.to(agent.device)
-        dones = dones.unsqueeze(1).to(agent.device)
+        next_states, dones = next_states.to(agent.device), dones.unsqueeze(1).to(agent.device)
+    
+        actor_loss, critic1_loss, critic1_pred_q, critic1_target_q, critic2_loss, critic2_pred_q, critic2_target_q, value_loss = agent.learn((states, actions, rewards, next_states, dones))
 
-        # update agent and get losses
-        policy_loss, critic1_loss, critic1_pred_q, critic1_target_q, critic2_loss, critic2_pred_q, critic2_target_q, value_loss = agent.learn((states, actions, rewards, next_states, dones))
-
-        # add losses to lists
-        policy_losses.append(policy_loss)
+        actor_losses.append(actor_loss)
         critic1_losses.append(critic1_loss)
         critic2_losses.append(critic2_loss)
         value_losses.append(value_loss)
-
-        # add Q-values to lists
         avg_pred_q_values.append((critic1_pred_q.mean().item() + critic2_pred_q.mean().item()) / 2)
         avg_target_q_values.append((critic1_target_q.mean().item() + critic2_target_q.mean().item()) / 2)
 
-    # at the end of the epoch, print the average Q-values
-    #print(f"Average predicted Q-value: {np.mean(avg_pred_q_values):.4f}")
-    #print(f"Average target Q-value: {np.mean(avg_target_q_values):.4f}")
+        # free memory after each batch
+        del states, actions, rewards, next_states, dones, actor_loss, critic1_loss, critic1_pred_q, critic1_target_q, critic2_loss, critic2_pred_q, critic2_target_q, value_loss
+        torch.cuda.empty_cache()
+        gc.collect()
 
-    return np.mean(policy_losses), np.mean(critic1_losses), np.mean(critic2_losses), np.mean(value_losses), avg_pred_q_values, avg_target_q_values
+    return np.mean(actor_losses), np.mean(critic1_losses), np.mean(critic2_losses), np.mean(value_losses), avg_pred_q_values, avg_target_q_values
 
-def train_iql(dataloaders, epochs, trials, dataset, loggerpath, env_id, seed, device):
+
+def evaluate_IQL_loss(agent, criterion, data_loader, device):
+    """
+    Evaluates the IQL model on a dataset (test loss).
+    """
+    agent.actor.eval()
+    total_loss = 0.0
+    total_samples = 0
+
+    # compute evaluation Loss from dataset
+    with torch.no_grad():
+        for states, actions, _, _, _ in data_loader:
+            states, actions = states.to(device), actions.to(device).long()
+
+            # forward pass
+            logits = agent.actor(states)
+            loss = criterion(logits, actions)
+
+            total_loss += loss.item() * states.size(0)
+            total_samples += states.size(0)
+
+            # free memory after each episode
+            del states, actions, logits, loss
+            torch.cuda.empty_cache()
+            gc.collect()
+
+    return total_loss / total_samples if total_samples > 0 else 0.0
+
+def evaluate_IQL_losses(agent, data_loader, device):
+    """
+    Evaluate the IQL model on a test set, computing:
+      - Actor classification loss (CrossEntropy)
+      - Critic TD loss (MSE or Huber)
+      - Value loss (expectile regression)
+    """
+    agent.eval()
+
+    # Define losses
+    actor_criterion = nn.CrossEntropyLoss()
+    td_criterion = nn.SmoothL1Loss()  # or MSELoss()
+
+    # Accumulators
+    total_actor_loss = 0.0
+    total_critic1_loss = 0.0
+    total_critic2_loss = 0.0
+    total_value_loss = 0.0
+    total_samples = 0
+
+    with torch.no_grad():
+        for states, actions, rewards, next_states, dones in data_loader:
+            batch_size = states.size(0)
+            total_samples += batch_size
+
+            # Move to device
+            states = states.to(device)
+            actions = actions.to(device).long()
+            rewards = rewards.unsqueeze(1).to(device)
+            next_states = next_states.to(device)
+            dones = dones.unsqueeze(1).to(device)
+
+            # 1️⃣ Actor Loss (CrossEntropy)
+            logits = agent.actor(states)
+            actor_loss = actor_criterion(logits, actions)
+
+            # 2️⃣ Critic TD Loss
+            next_values = agent.value(next_states)
+            next_values = torch.clamp(next_values, min=-100, max=100)
+            q_target = rewards + (1 - dones) * 0.99 * next_values
+
+            q_target = torch.clamp(q_target, min=-300, max=300)
+
+            q1_pred = agent.critic1(states, actions)
+            q2_pred = agent.critic2(states, actions)
+
+            critic1_loss = td_criterion(q1_pred, q_target)
+            critic2_loss = td_criterion(q2_pred, q_target)
+
+            # 3️⃣ Value Loss (Expectile regression)
+            with torch.no_grad():
+                min_q = torch.min(q1_pred, q2_pred)
+            v_pred = agent.value(states)
+
+            diff = min_q - v_pred
+            expectile = 0.95
+            value_loss = ((torch.where(diff > 0, expectile, (1 - expectile)) * diff**2)).mean()
+            value_loss = torch.clamp(value_loss, max=1e4)
+
+            # Accumulate
+            total_actor_loss += actor_loss.item() * batch_size
+            total_critic1_loss += critic1_loss.item() * batch_size
+            total_critic2_loss += critic2_loss.item() * batch_size
+            total_value_loss += value_loss.item() * batch_size
+
+            # Clean up
+            del states, actions, rewards, next_states, dones
+            torch.cuda.empty_cache()
+            gc.collect()
+
+    if total_samples == 0:
+        return 0.0, 0.0, 0.0, 0.0
+
+    return (
+        total_actor_loss / total_samples,
+        total_critic1_loss / total_samples,
+        total_critic2_loss / total_samples,
+        total_value_loss / total_samples
+    )
+
+def evaluate_IQL_reward(env, agent, n_episodes, device, trial_idx, max_steps_per_episode=1000, debug=False):
+    ''' Evaluate the IQL agent on the environment for n_episodes '''
+    rewards = []
+
+    # make sure environment gets a unique seed per trial
+    env.seed(1234 + trial_idx)  
+    env.action_space.seed(1234 + trial_idx)
+
+    for episode in range(n_episodes):
+        observation, _ = env.reset()
+        total_reward = 0
+        done = False
+        steps = 0 # step counter
+
+        while not done and steps < max_steps_per_episode:
+            with torch.no_grad():
+                state = torch.tensor(observation, dtype=torch.float32).permute(2, 0, 1).unsqueeze(0).to(device) / 255.0
+                action = agent.get_action(state, eval=True).squeeze().item()
+            
+            # handle invalid actions
+            if not (0 <= action < env.action_space.n):
+                action = max(0, min(action, env.action_space.n - 1))
+
+            # take action in the environment
+            observation, reward, terminated, truncated, _ = env.step(action)
+            done = terminated or truncated
+            total_reward += reward
+            steps += 1 # increment step counter
+
+            if debug:
+                if steps % 500 == 0:
+                    print(f"Episode {episode+1}: {steps} steps taken, Total Reward: {total_reward}")
+
+        rewards.append(total_reward)
+
+        if debug:
+            print(f"Finished Episode {episode+1}: Total Reward = {total_reward}, Steps Taken = {steps}")
+
+        # free memory after each episode
+        del state, action, observation, reward, terminated, truncated
+        torch.cuda.empty_cache()
+        gc.collect()
+
+    return [np.mean(rewards)]
+
+def train_and_evaluate_IQL(dataloaders, epochs, trials, dataset, env_id, seed, device):
     """
     Trains an Implicit Q-Learning (IQL) agent on the specified dataset.
-
-    :param dataloaders: dictionary containing training, validation, and test data loaders
-    :param epochs: number of training epochs
-    :param trials: number of training trials
-    :param dataset: name of the dataset being used
-    :param loggerpath: the path for the logger
     """
-    stats_to_return = {}
+    logdir = 'implicit_q_learning_iql/iql_logs'
+    stats_to_save = {}
 
     # init dictionary to store Q-values by epoch
     epoch_q_values = {
@@ -173,256 +252,256 @@ def train_iql(dataloaders, epochs, trials, dataset, loggerpath, env_id, seed, de
         } for trial in range(trials)
     }
 
-    print("1")
-    print(dataset)
-    # loop through datasets
+    # train and evaluate the IQL model on all datasets
     for dataset_name, loaders in ((d, l) for d, l in dataloaders.items() if d == dataset):
-        print("2")
         print(f"Training IQL on {dataset_name}")
 
-        # lists to store losses and rewards for plotting
-        all_policy_losses, all_critic1_losses, all_critic2_losses, all_value_losses, all_rewards = [], [], [], [], []
+        # split dataset name to extract type and perturbation level
+        parts = dataset_name.split('_')
+        dataset_type = '_'.join(parts[:2]).lower()  # e.g., 'expert_dataset'
+        perturbation_level = parts[-1]  # e.g., '20'
+
+        # lists to store losses and rewards
+        all_actor_losses, all_critic1_losses, all_critic2_losses, all_value_losses, all_test_losses, all_rewards = [], [], [], [], [], []
 
         # loop through trials
         for trial in range(trials):
             print(f"-- Starting Trial {trial + 1}/{trials} --")
 
+            set_all_seeds(seed + trial) # set all seeds for reproducibility
+
             # ------- Setup Phase -------
             # logger setup
-            iql_logger = TensorBoardLogger('iql_training_logs', dataset_path=loggerpath)
-            print("TensorBoard logging directory:")
+            iql_logger = TensorBoardLogger(logdir, dataset_type, perturbation_level)
 
             # create the Enviornment
-            iql_env, iql_action_dim, iql_state_dim = create_env(
-                logger=iql_logger,
-                env_id=env_id,
-                capture_video=False, #TODO: True
-                seed=seed,
-                trial_number=f'{trial+1}'
-                )
+            iql_env, iql_action_dim = create_env(iql_logger, seed + trial, env_id, True, trial_number=f'{trial+1}')
 
-            # reinitialize the IQL model for each dataset
-            iql_agent = IQLModel(state_size=iql_state_dim,
-                                action_size=iql_action_dim,
-                                learning_rate=3e-4,
-                                hidden_size=256,
-                                tau=5e-3,
-                                temperature=0.1,
-                                expectile=0.7,
-                                device=device,
-                                trial_idx=trial,
-                                global_seed=seed
-                                )
+            # initialize the IQL model for each dataset
+            iql_agent = IQLModel(iql_action_dim, device, seed + trial, trial)
 
-            # initialize optimizers with learning rates and possibly other hyperparameters
-            actor_optimizer = optim.Adam(iql_agent.actor_network.parameters(), lr=0.001)
-            critic_optimizer = optim.Adam(list(iql_agent.critic1_network.parameters()) + list(iql_agent.critic2_network.parameters()), lr=0.001)
-            value_optimizer = optim.Adam(iql_agent.value_network.parameters(), lr=0.001)
+            criterion = nn.CrossEntropyLoss()
 
-            # lists to store losses and rewards for this trial
-            policy_losses, critic1_losses, critic2_losses, value_losses, rewards = [], [], [], [], []
+            # lists to store losses and rewards for each trial
+            actor_losses, critic1_losses, critic2_losses, value_losses, test_losses, rewards = [], [], [], [], [], []
 
-            # Hyperparameter Tuning - Initialize variables to track best tuning loss and patience counter
-            best_tune_loss = float('inf')
-            no_improvement_epochs = 0
-            lr_decay_factor = 0.9
-            patience = 3
-
-            # loop through epochs
-            for epoch in tqdm(range(epochs), desc='Epochs'):
-                # ------- Initial Training Phase -------
+            # start Offline Training -> loop through epochs
+            for epoch in tqdm(range(epochs), desc='Epochs', leave=True):
+                # ------- Training Phase -------
                 iql_agent.train()
-                policy_loss, critic1_loss, critic2_loss, value_loss, avg_pred_q_values, avg_target_q_values = train_one_IQL_epoch(iql_agent, loaders['train'])
-
-                # collect losses for plotting
-                policy_losses.append(policy_loss)
+                actor_loss, critic1_loss, critic2_loss, value_loss, avg_pred_q_values, avg_target_q_values = train_one_IQL_epoch(iql_agent, loaders['train'])
+                
+                # collect losses and Q-values
+                actor_losses.append(actor_loss)
                 critic1_losses.append(critic1_loss)
                 critic2_losses.append(critic2_loss)
                 value_losses.append(value_loss)
-
-                # store Q-values for current epoch and trial
                 epoch_q_values[trial]['avg_pred_q_values'][epoch] = avg_pred_q_values
                 epoch_q_values[trial]['avg_target_q_values'][epoch] = avg_target_q_values
 
-                # log training loss
-                main_tag = f'{dataset_name}_Trial_{trial + 1}'
-                iql_logger.log(f'{main_tag}/Poicy Loss', policy_loss, epoch + 1)
-                iql_logger.log(f'{main_tag}/Critc1 Loss', critic1_loss, epoch + 1)
-                iql_logger.log(f'{main_tag}/Critc2 Loss', critic2_loss, epoch + 1)
+                # log losses
+                main_tag = f'{dataset_name}_trial_{trial + 1}'
+                iql_logger.log(f'{main_tag}/Actor Loss', actor_loss, epoch + 1)
+                iql_logger.log(f'{main_tag}/Critic 1 Loss', critic1_loss, epoch + 1)
+                iql_logger.log(f'{main_tag}/Critic 2 Loss', critic2_loss, epoch + 1)
                 iql_logger.log(f'{main_tag}/Value Loss', value_loss, epoch + 1)
 
                 # ------- Hyperparameter Tuning Phase -------
-                tune_loss = tune_IQL(iql_agent, loaders['tuning'])
-                #iql_logger.log(f'{main_tag}/Tune Loss', tune_loss, epoch + 1)
+                tune_loss = evaluate_IQL_loss(iql_agent, criterion, loaders['tuning'], device)
+                iql_logger.log(f'{main_tag}/Tune Loss', tune_loss, epoch + 1)
 
-                # check if there is an improvement
-                if tune_loss < best_tune_loss:
-                    best_tune_loss = tune_loss
-                    no_improvement_epochs = 0  # reset counter
-                else:
-                    no_improvement_epochs += 1
+                # adjust learning rate for all optimizers in the agent
+                adjust_learning_rate(iql_agent, 0.98 if tune_loss > 0.5 else 1.0)
+                
+                # ------- Test Phase -------
+                test_loss = evaluate_IQL_loss(iql_agent, criterion, loaders['test'], device)
+                test_losses.append(test_loss)
+                iql_logger.log(f'{main_tag}/Test Loss', test_loss, epoch + 1)
 
-                # if no improvement equal to patience, reduce learning rate
-                if no_improvement_epochs >= patience:
-                    no_improvement_epochs = 0  # reset counter
+                # evaluation and reward collection at the end of each epoch
+                reward = evaluate_IQL_reward(iql_env, iql_agent, n_episodes=20, device=device, trial_idx=trial, max_steps_per_episode=5000)
+                rewards.extend(reward)
+                iql_logger.log(f'{main_tag}/Reward', reward[0], epoch + 1) # log reward
 
-                    # reduce learning rate
-                    adjust_learning_rate(actor_optimizer, lr_decay_factor)
-                    adjust_learning_rate(critic_optimizer, lr_decay_factor)
-                    adjust_learning_rate(value_optimizer, lr_decay_factor)
-                    print(f"Learning rate reduced by {lr_decay_factor} at epoch {epoch+1}")
-
-
-                # ------- Test Phase on Test Set -------
-                stats = evaluate(iql_agent, iql_env, num_episodes=20)
-                rewards.append(stats['reward'])
-                #print("Evaluation Stats:", stats)
-                iql_logger.log(f'{main_tag}/Reward', stats['reward'], epoch + 1)
-
-            # collect losses for all trials
-            all_policy_losses.append(policy_losses)
+                # free Memory After Each Epoch
+                torch.cuda.empty_cache()
+                gc.collect()
+            
+            # collect all losses and rewards for all trials
+            all_actor_losses.append(actor_losses)
             all_critic1_losses.append(critic1_losses)
             all_critic2_losses.append(critic2_losses)
             all_value_losses.append(value_losses)
+            all_test_losses.append(test_losses)
             all_rewards.append(rewards)
 
-            # print final loss values for this trial
-            print(f"Finished Training on {dataset_name} - Policy Loss: {policy_loss:.5f}")
-            print(f"                                    - Critic1 Loss: {critic1_loss:.5f}")
-            print(f"                                    - Critic2 Loss: {critic2_loss:.5f}")
-            print(f"                                    - Value Loss: {value_loss:.5f}")
+            print(f"Finished Training on {dataset_name} - Actor Loss: {actor_loss:.5f}")
+            print(f"                                                   - Critic 1 Loss: {critic1_loss:.5f}")
+            print(f"                                                   - Critic 2 Loss: {critic2_loss:.5f}")
+            print(f"                                                   - Value Loss: {value_loss:.5f}")
+            print(f"                                                   - Tuning Loss: {tune_loss:.5f}")
+            print(f"                                                   - Test Loss: {test_loss:.5f}")
+            print(f"                                                   - Reward: {reward[0]:.5f}")
 
-            # close the enviornment after each trial
+            # save model after the first trial
+            if trial == 0:
+                model_save_path = f"{logdir}/{dataset_type}/perturbation_{perturbation_level}/iql_model_{perturbation_level}.pth"
+                torch.save(iql_agent.state_dict(), model_save_path)
+                print(f"Model saved to {model_save_path}")
+            
+            # close the environment
             iql_env.close()
 
-        stats_to_return = {
-            'policy_losses': all_policy_losses,
+        stats_to_save = {
+            'actor_losses': all_actor_losses,
             'critic1_losses': all_critic1_losses,
             'critic2_losses': all_critic2_losses,
             'value_losses': all_value_losses,
+            'test_losses': all_test_losses,
             'rewards': all_rewards,
             'q_values': epoch_q_values,
             'dataset_name': dataset_name,
             'trials': trials
         }
 
-        print()
+    # save the return stats
+    stats_save_path = f"{logdir}/{dataset_type}/perturbation_{perturbation_level}/stats_{perturbation_level}.pkl"
+    save_return_stats(stats_to_save, stats_save_path)
+    print(f"Return Stats saved to {stats_save_path}")
 
-    # close TensorBoard logger
+    # close the logger
     iql_logger.close()
 
-    return stats_to_return
-
-def plot_iql_losses_and_rewards(policy_losses, critic1_losses, critic2_losses, value_losses, rewards, dataset_name, trials):
+def continue_training_IQL(dataloaders, further_epochs, dataset, env_id, seed, device):
     """
-    Plot the policy, critic, value losses and rewards from IQL training.
+    Continues training an existing IQL model from a previous trial, including tuning.
 
-    :param policy_losses: list of policy losses for each trial
-    :param critic1_losses: list of critic 1 losses for each trial
-    :param critic2_losses: list of critic 2 losses for each trial
-    :param value_losses: list of value losses for each trial
-    :param rewards: list of rewards for each trial
-    :param dataset_name: name of the dataset
-    :param trials: number of trials
+    :param dataloaders: Dataset loaders.
+    :param further_epochs: Number of additional epochs.
+    :param dataset: Dataset name (e.g., 'expert_dataset_perturbation_0').
+    :param env_id: Environment ID (e.g., 'Seaquest-v4').
+    :param seed: Seed for reproducibility.
+    :param device: Training device ('cuda' or 'cpu').
     """
-    fig, axs = plt.subplots(1, 5, figsize=(25, 5))
-    axs[0].set_title(f'Policy Loss - {dataset_name}')
-    axs[1].set_title(f'Critic 1 Loss - {dataset_name}')
-    axs[2].set_title(f'Critic 2 Loss - {dataset_name}')
-    axs[3].set_title(f'Value Loss - {dataset_name}')
-    axs[4].set_title(f'Rewards per Epoch - {dataset_name}')
+    logdir = 'implicit_q_learning_iql/iql_logs'
 
-    # plot losses and rewards for each trial
-    for trial in range(trials):
-        axs[0].plot(policy_losses[trial], label=f'Trial {trial+1}')
-        axs[1].plot(critic1_losses[trial], label=f'Trial {trial+1}')
-        axs[2].plot(critic2_losses[trial], label=f'Trial {trial+1}')
-        axs[3].plot(value_losses[trial], label=f'Trial {trial+1}')
-        axs[4].plot(rewards[trial], label=f'Trial {trial+1}')
+    # loop through datasets
+    for dataset_name, loaders in ((d, l) for d, l in dataloaders.items() if d == dataset):
+        print(f"Continuing IQL Training on {dataset_name}")
 
-    for ax in axs:
-        ax.set_xlabel('Epoch')
-        ax.legend()
+        # split dataset name to extract type and perturbation level
+        parts = dataset_name.split('_')
+        dataset_type = '_'.join(parts[:2]).lower()  # e.g., 'expert_dataset'
+        perturbation_level = parts[-1]  # e.g., '20'
 
-    axs[0].set_ylabel('Loss')
-    axs[4].set_ylabel('Total Reward')  # set y label for rewards plot
+        # load existing model
+        model_save_path = f"{logdir}/{dataset_type}/perturbation_{perturbation_level}/iql_model_{perturbation_level}.pth"
 
-    plt.tight_layout()
-    plt.show()
+        # ensure model exists
+        if not os.path.exists(model_save_path):
+            raise FileNotFoundError(f"Model file not found: {model_save_path}. Cannot continue training.")
+        else:
+            print(f"Loading existing model from {model_save_path}")
 
-def calculate_similarity(q_values_dict):
-    """
-    Calculates the cosine similarity between predicted and target Q-values for each trial and epoch.
+        iql_logger = TensorBoardLogger(logdir, dataset_type, perturbation_level)
 
-    :param q_values_dict: dictionary containing Q-values for each trial and epoch
-    :return: matrix of similarities and DataFrame of percentage similarities
-    """
-    trials = len(q_values_dict)  # get number of trials
-    epochs = len(q_values_dict[0]['avg_pred_q_values'])  # get number of epochs
+        # create environment
+        iql_env, iql_action_dim = create_env(iql_logger, seed, env_id, True, "trial_1_continued")
 
-    similarities = np.zeros((trials, epochs))  # initialize array to store similarities
+        # initialize and load model
+        iql_agent = IQLModel(iql_action_dim, device, seed, 0)
+        iql_agent.load_state_dict(torch.load(model_save_path, map_location=device))
+        iql_agent.to(device)
 
-    for trial in range(trials):
-        for epoch in range(epochs):
-            # calculate cosine similarity between predicted and target Q-values for each epoch and trial
-            pred_q_values = np.array(q_values_dict[trial]['avg_pred_q_values'][epoch])
-            target_q_values = np.array(q_values_dict[trial]['avg_target_q_values'][epoch])
-            similarity = cosine_similarity([pred_q_values], [target_q_values])[0][0]
-            similarities[trial][epoch] = similarity
+        # load existing stats
+        stats_path = f"{logdir}/{dataset_type}/perturbation_{perturbation_level}/stats_{perturbation_level}.pkl"
 
-    # convert similarity matrix to DataFrame with trial and epoch as row and column names
-    similarity_df = pd.DataFrame(similarities, index=['Trial {}'.format(i+1) for i in range(trials)], columns=['Epoch {}'.format(i+1) for i in range(epochs)])
+        # ensure stats exist
+        if not os.path.exists(stats_path):
+            raise FileNotFoundError(f"Training stats file not found: {stats_path}. Cannot continue training.")
+        else:
+            print(f"Loading existing stats from {stats_path}")
+            with open(stats_path, 'rb') as f:
+                existing_stats = pickle.load(f)
 
-    # calculate percentage similarity
-    percentage_similarity = similarity_df * 100
+        # extract existing training progress
+        prev_epochs = len(existing_stats['actor_losses'][0])
+        total_epochs = prev_epochs + further_epochs
 
-    return similarities, percentage_similarity
+        criterion = nn.CrossEntropyLoss()
 
-def plot_q_value_similarity(q_values_dict):
-    """
-    Plots the cosine similarity between predicted and target Q-values for each trial and epoch.
+        trial_idx = 0  # since we're continuing only trial 1
 
-    :param q_values_dict: dictionary containing Q-values for each trial and epoch
-    """
-    # check if there are enough trials to plot first and last
-    if len(q_values_dict) < 2:
-        raise ValueError("Not enough trials to plot both first and last.")
+        # get the existing q_values dictionary
+        epoch_q_values = existing_stats.get('q_values', {
+            trial_idx: {
+                'avg_pred_q_values': {},
+                'avg_target_q_values': {}
+            }
+        })
 
-    # select first and last trial
-    selected_trials = [0, len(q_values_dict) - 1]
-    epochs = len(q_values_dict[0]['avg_pred_q_values'])
+        # begin continued training loop
+        for epoch in tqdm(range(prev_epochs, total_epochs), desc='Continued Training Epochs'):
+            iql_agent.train()
+            actor_loss, critic1_loss, critic2_loss, value_loss, avg_pred_q_values, avg_target_q_values = train_one_IQL_epoch(iql_agent, loaders['train'])
 
-    # create subplots for first and last trials
-    fig, axes = plt.subplots(2, 2, figsize=(12, 7))  # Two rows, one for each trial
+            # log training loss
+            main_tag = f'{dataset_name}_Trial_1_Continued'
+            iql_logger.log(f'{main_tag}/Actor Loss', actor_loss, epoch + 1)
+            iql_logger.log(f'{main_tag}/Critic 1 Loss', critic1_loss, epoch + 1)
+            iql_logger.log(f'{main_tag}/Critic 2 Loss', critic2_loss, epoch + 1)
+            iql_logger.log(f'{main_tag}/Value Loss', value_loss, epoch + 1)
 
-    # flatten axes array for easy indexing
-    axes = axes.flatten()
+            # append new losses
+            existing_stats['actor_losses'][0].append(actor_loss)
+            existing_stats['critic1_losses'][0].append(critic1_loss)
+            existing_stats['critic2_losses'][0].append(critic2_loss)
+            existing_stats['value_losses'][0].append(value_loss)
 
-    # iterate through selected trials (first and last)
-    for idx, trial_index in enumerate(selected_trials):
-        trial_data = q_values_dict[trial_index]
+            # add q_values for this epoch
+            epoch_q_values[trial_idx]['avg_pred_q_values'][epoch] = avg_pred_q_values
+            epoch_q_values[trial_idx]['avg_target_q_values'][epoch] = avg_target_q_values
 
-        # --- Plotting the first epoch ---
-        pred_q_values_first = trial_data['avg_pred_q_values'][0]
-        target_q_values_first = trial_data['avg_target_q_values'][0]
+            # tuning phase
+            tuning_loss = evaluate_IQL_loss(iql_agent, criterion, loaders['tuning'], device)
+            iql_logger.log(f'{main_tag}/Tune Loss', tuning_loss, epoch + 1)
+            adjust_learning_rate(iql_agent, 0.98 if tuning_loss > 0.5 else 1.0)
 
-        axes[idx*2].plot(pred_q_values_first, label='Predicted Q-values')
-        axes[idx*2].plot(target_q_values_first, label='Target Q-values', alpha=0.5)
-        axes[idx*2].set_title(f'Trial {trial_index + 1}: First Epoch')
-        axes[idx*2].legend()
+            # Test phase
+            test_loss = evaluate_IQL_loss(iql_agent, criterion, loaders['test'], device)
+            iql_logger.log(f'{main_tag}/Test Loss', test_loss, epoch + 1)
+            existing_stats['test_losses'][0].append(test_loss)
 
-        # --- Plotting the last epoch ---
-        pred_q_values_last = trial_data['avg_pred_q_values'][epochs - 1]
-        target_q_values_last = trial_data['avg_target_q_values'][epochs - 1]
+            # evaluation phase
+            reward = evaluate_IQL_reward(iql_env, iql_agent, n_episodes=20, device=device, trial_idx=0, max_steps_per_episode=5000)
+            iql_logger.log(f'{main_tag}/Reward', reward[0], epoch + 1)
+            existing_stats['rewards'][0].append(reward)
 
-        axes[idx*2+1].plot(pred_q_values_last, label='Predicted Q-values')
-        axes[idx*2+1].plot(target_q_values_last, label='Target Q-values', alpha=0.5)
-        axes[idx*2+1].set_title(f'Trial {trial_index + 1}: Last Epoch')
-        axes[idx*2+1].legend()
+            # free Memory After Each Epoch
+            torch.cuda.empty_cache()
+            gc.collect()
+        
+        # update q_values in the stats dict
+        existing_stats['q_values'] = epoch_q_values
 
-    # add X and Y labels
-    fig.text(0.5, -0.01, 'Index within Epoch', ha='center', va='center')
-    fig.text(0.01, 0.5, 'Q-value', ha='center', va='center', rotation='vertical')
+        print(f"Finished additional Training on {dataset_name} - Actor Loss: {actor_loss:.5f}")
+        print(f"                                                              - Critic 1 Loss: {critic1_loss:.5f}")
+        print(f"                                                              - Critic 2 Loss: {critic2_loss:.5f}")
+        print(f"                                                              - Value Loss: {value_loss:.5f}")
+        print(f"                                                              - Tuning Loss: {tuning_loss:.5f}")
+        print(f"                                                              - Test Loss: {test_loss:.5f}")
+        print(f"                                                              - Reward: {reward[0]:.2f}")
 
-    plt.tight_layout()
-    plt.show()
+        # save updated model with continued name
+        continued_model_path = model_save_path.replace('.pth', '_continued.pth')
+        torch.save(iql_agent.state_dict(), continued_model_path)
+        print(f"Updated DQN model saved to {continued_model_path}")
+
+        # save updated stats with continued name
+        continued_stats_path = stats_path.replace('.pkl', '_continued.pkl')
+        with open(continued_stats_path, 'wb') as f:
+            pickle.dump(existing_stats, f)
+        print(f"Updated stats saved to {continued_stats_path}")
+
+        iql_env.close()
+    iql_logger.close()

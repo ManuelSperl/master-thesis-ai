@@ -66,13 +66,13 @@ def set_all_seeds(seed):
 
     :param seed: the seed to set
     """
-    np.random.seed(seed)
-    random.seed(seed)
-    torch.manual_seed(seed)
+    random.seed(seed)  # Python random seed
+    np.random.seed(seed)  # NumPy random seed
+    torch.manual_seed(seed)  # PyTorch CPU seed
     if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
+        torch.cuda.manual_seed_all(seed)  # PyTorch GPU seed
+        torch.backends.cudnn.deterministic = True  # Ensures deterministic behavior
+        torch.backends.cudnn.benchmark = False  # Avoids non-deterministic optimizations
 
     set_random_seed(seed)  # For stable_baselines3
 

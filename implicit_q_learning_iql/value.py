@@ -1,3 +1,5 @@
+# value.py
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -7,23 +9,54 @@ class ValueNet(nn.Module):
     A class representing the value network for Implicit Q-Learning.
     This network estimates the state value function independent of the actions.
     """
-    def __init__(self, state_size, hidden_size, global_seed, trial_idx):
+    def __init__(self, global_seed, trial_idx):
         """
         Initializes the ValueNet.
 
-        :param state_size: dimensionality of the state space
-        :param hidden_size: number of neurons in each hidden layer
+        :param global_seed: global seed for reproducibility
         :param trial_idx: index of the trial for reproducibility
         """
         super(ValueNet, self).__init__()
-        self.global_seed = global_seed  # save the global seed as an instance variable
+        self.global_seed = global_seed  # Save the global seed as an instance variable
 
-        self.fc1 = nn.Linear(state_size, hidden_size)
-        self.fc2 = nn.Linear(hidden_size, hidden_size)
-        self.fc3 = nn.Linear(hidden_size, 1)
+        # Convolutional layers
+        self.conv1 = nn.Conv2d(3, 32, kernel_size=8, stride=4)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
 
-        # custom weight initialization with trial index (for reproducibility)
+        # Compute the correct size for the fully connected layer dynamically
+        self.fc_input_dim = self._get_conv_output_dim()
+
+        # Fully connected layers
+        self.fc1 = nn.Linear(self.fc_input_dim, 512)
+        self.fc2 = nn.Linear(512, 1)
+
+        # Custom weight initialization with trial index
         self.init_weights(trial_idx)
+
+    def _get_conv_output_dim(self):
+        """
+        Computes the size of the feature map after the convolutional layers.
+        """
+        dummy_input = torch.zeros(1, 3, 210, 160)  # Seaquest raw input size
+        x = F.relu(self.conv1(dummy_input))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        return x.view(1, -1).size(1)  # Flatten and get total size
+
+    def init_weights(self, trial_idx):
+        """
+        Initialize weights with a fixed seed to ensure reproducibility.
+
+        :param trial_idx: index of the trial for reproducibility
+        """
+        seed = self.global_seed + (trial_idx * 1234)
+        torch.manual_seed(seed)
+        for m in self.modules():
+            if isinstance(m, (nn.Linear, nn.Conv2d)):
+                nn.init.orthogonal_(m.weight)  # Orthogonal initialization
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
 
     def forward(self, state):
         """
@@ -33,65 +66,28 @@ class ValueNet(nn.Module):
 
         :return: estimated value of the state
         """
-        x = F.relu(self.fc1(state))
-        x = F.relu(self.fc2(x))
+        x = F.relu(self.conv1(state))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = x.view(x.size(0), -1)  # Flatten the tensor
+        x = F.relu(self.fc1(x))
+        return self.fc2(x)
 
-        return self.fc3(x)
-
-    def init_weights(self, trial_idx):
-        """
-        Initialize weights with a fixed seed to ensure reproducibility.
-
-        :param trial_idx: index of the trial for reproducibility
-        """
-        # set seed different for every trial, but consistent for reproducability
-        seed = self.global_seed + (trial_idx * 1234)
-        #print("Value seed: ", seed) # to check seed
-
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                torch.manual_seed(seed)
-                nn.init.xavier_uniform_(m.weight)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-
-    def expectile_loss(self, diff, expectile=0.8):
-        """
-        Calculates the expectile loss, which is used for robust value estimation.
-
-        :param diff: difference between target Q values and estimated values
-        :param expectile: expectile coefficient
-
-        :return: calculated expectile loss
-        """
-        # calculate the weight based on the difference
-        weight = torch.where(diff > 0, expectile, (1 - expectile))
-
-        # calculate and return the expectile loss
-        return weight * (diff**2)
-
-    def compute_value_loss(self, states, actions, critic1_target_network, critic2_target_network, expectile):
-        """
-        Computes the value loss using the expectile loss function.
-
-        :param states: input states
-        :param actions: actions taken at the states
-        :param critic1_target_network: first critic target network
-        :param critic2_target_network: second critic target network
-        :param expectile: expectile coefficient
-
-        :return: computed value loss
-        """
-        # get target Q values
+    def compute_value_loss(self, states, actions, critic1, critic2, expectile):
         with torch.no_grad():
-            target_q1  = critic1_target_network(states, actions)
-            target_q2 = critic2_target_network(states, actions)
-            min_Q = torch.min(target_q1, target_q2)
+            target_q1 = critic1(states, actions)
+            target_q2 = critic2(states, actions)
+            min_Q = torch.min(target_q1, target_q2)  # Use min Q value for conservative estimation
 
-        # get current value
-        current_value = self.forward(states)
+        current_value = self.forward(states)  # Current state values
 
-        # calculate the expectile loss
-        value_loss = self.expectile_loss(min_Q - current_value, expectile).mean()
+        # 🔥 FIX: Use normalized expectile loss
+        diff = min_Q - current_value
+        loss = ((torch.where(diff > 0, expectile, (1 - expectile)) * (diff**2))).mean()
 
-        return value_loss
+        # 🔥 FIX: Clip value loss to prevent explosion
+        loss = torch.clamp(loss, max=1e4)  
+        #loss = torch.clamp(loss, min=0, max=10.0)  # Prevent instability
+
+        return loss
+

@@ -1,4 +1,4 @@
-import numpy as np
+# iql_model.py
 
 import torch
 import torch.nn as nn
@@ -6,214 +6,105 @@ import torch.optim as optim
 import torch.nn.functional as F
 from torch.nn.utils import clip_grad_norm_
 
-# ensure the module is re-imported after changes
 import importlib
+
 import implicit_q_learning_iql.critic
 import implicit_q_learning_iql.actor
 import implicit_q_learning_iql.value
+
 importlib.reload(implicit_q_learning_iql.critic)
 importlib.reload(implicit_q_learning_iql.actor)
 importlib.reload(implicit_q_learning_iql.value)
+
 from implicit_q_learning_iql.critic import CriticNet
 from implicit_q_learning_iql.actor import ActorNet
 from implicit_q_learning_iql.value import ValueNet
 
 class IQLModel(nn.Module):
-    """
-    A class representing the IQLModel which coordinates the actor, critic, and value networks for Implicit Q-Learning.
-    """
-    def __init__(self, state_size, action_size, learning_rate, hidden_size, tau, temperature, expectile, device, global_seed, trial_idx):
-        """
-        Initializes the IQLModel with all necessary networks and optimizers.
-
-        :param state_size: dimensionality of the state space
-        :param action_size: dimensionality of the action space
-        :param learning_rate: learning rate for all optimizers
-        :param hidden_size: number of neurons in each hidden layer
-        :param tau: soft update parameter
-        :param temperature: scaling factor for adjusting the relative importance of entropy
-        :param expectile: expectile value for robust value estimation
-        :param device: computation device (CPU or GPU)
-        :param trial_idx: index of the trial for reproducibility
-        """
+    def __init__(self, action_dim, device, global_seed, trial_idx):
         super(IQLModel, self).__init__()
-        self.state_size = state_size
-        self.action_size = action_size
-        self.learning_rate = learning_rate
-        self.hidden_size = hidden_size
-        self.tau = tau
         self.device = device
-        self.global_seed = global_seed  # save the global seed as an instance variable
+        self.actor = ActorNet(action_dim, global_seed, trial_idx).to(device)
+        self.critic1 = CriticNet(action_dim, global_seed, trial_idx).to(device)
+        self.critic2 = CriticNet(action_dim, global_seed, trial_idx + 100).to(device)  # Different seed for Critic 2
+        self.value = ValueNet(global_seed, trial_idx).to(device)
 
-        self.clip_grad_param = 1
-        self.temperature = torch.FloatTensor([temperature]).to(device)
-        self.expectile = torch.FloatTensor([expectile]).to(device)
-        self.gamma = torch.FloatTensor([0.99]).to(device)
-
-        # ------------------ Setup networks ------------------
-        # Actor Network and Optimizer
-        self.actor_network = ActorNet(
-            state_size=state_size,
-            action_size=action_size,
-            hidden_size=hidden_size,
-            global_seed=global_seed,
-            trial_idx=trial_idx
-        ).to(device)
-        self.actor_optimizer = optim.Adam(self.actor_network.parameters(), lr=learning_rate)
-
-        # Critic Networks and Optimizers
-        self.critic1_network = CriticNet(
-            state_size=state_size,
-            action_size=action_size,
-            hidden_size=hidden_size,
-            global_seed=global_seed,
-            trial_idx=trial_idx
-        ).to(device)
-        self.critic1_target_network = CriticNet(
-            state_size=state_size,
-            action_size=action_size,
-            hidden_size=hidden_size,
-            global_seed=global_seed,
-            trial_idx=trial_idx
-        ).to(device)
-        self.critic1_optimizer = optim.Adam(self.critic1_network.parameters(), lr=learning_rate)
-
-        self.critic2_network = CriticNet(
-            state_size=state_size,
-            action_size=action_size,
-            hidden_size=hidden_size,
-            global_seed=global_seed,
-            trial_idx=trial_idx + 100 # to get different one then the Critic1
-        ).to(device)
-        self.critic2_target_network = CriticNet(
-            state_size=state_size,
-            action_size=action_size,
-            hidden_size=hidden_size,
-            global_seed=global_seed,
-            trial_idx=trial_idx
-        ).to(device)
-        self.critic2_optimizer = optim.Adam(self.critic2_network.parameters(), lr=learning_rate)
-
-        # Value Network and Optimizer
-        self.value_network = ValueNet(
-            state_size=state_size,
-            hidden_size=hidden_size,
-            global_seed=global_seed,
-            trial_idx=trial_idx
-        ).to(device)
-        self.value_optimizer = optim.Adam(self.value_network.parameters(), lr=learning_rate)
+        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=1e-4)
+        self.critic1_optimizer = optim.Adam(self.critic1.parameters(), lr=1e-4)
+        self.critic2_optimizer = optim.Adam(self.critic2.parameters(), lr=1e-4)
+        self.value_optimizer = optim.Adam(self.value.parameters(), lr=1e-4)
 
     def get_action(self, state, eval=False):
         """
-        Retrieves an action using the policy defined by the actor network.
+        Get an action using the actor network.
 
-        :param state: the current state
-        :param eval: boolean flag to determine whether the action is deterministic
-
-        :return: the selected action as a numpy array
+        :param state: Input state (tensor)
+        :param eval: If True, select the most probable action instead of sampling
+        :return: Selected action
         """
-        # convert state to tensor and move to device
-        if isinstance(state, np.ndarray):
-            state = torch.from_numpy(state).float().to(self.device)
-        else:
-            state = state.to(self.device)
-
-        # get action from actor network
         with torch.no_grad():
-            if eval:
-                action = self.actor_network.get_action(state, eval=True)
-            else:
-                action = self.actor_network.get_action(state)
-
-        # move action to CPU and convert to numpy
-        return action.cpu().numpy()
-
-
-    def update_target_networks(self, source_model , target_model):
-        """
-        Updates the target networks using a soft update strategy.
-
-        :param source_model: the source model from which weights are copied
-        :param target_model: the target model to which weights are copied
-        """
-        # update target network parameters using soft update
-        for target_param, local_param in zip(target_model.parameters(), source_model.parameters()):
-            target_param.data.copy_(self.tau * local_param.data + (1.0 - self.tau) * target_param.data)
-
+            return self.actor.get_action(state, eval=eval)
 
     def learn(self, experiences):
-        """
-        Conducts a learning update using the given batch of experience tuples.
-
-        :param experiences: tuple containing everything
-
-        :return: tuple of loss values for the actor, critic1, critic2, and value network
-        """
-        states, actions, rewards, next_states, dones = experiences # unpack experience tuple
-
-        # ---------------------- Actor Loss ----------------------
-
-        self.actor_optimizer.zero_grad()
-        actor_loss = self.actor_network.compute_actor_loss(
-            states=states,
-            actions=actions,
-            value_network=self.value_network,
-            critic1_target_network=self.critic1_target_network,
-            critic2_target_network=self.critic2_target_network,
-            temperature=self.temperature
+        states, actions, rewards, next_states, dones = experiences
+        states, actions, rewards, next_states, dones = (
+            states.to(self.device), actions.to(self.device),
+            rewards.to(self.device), next_states.to(self.device),
+            dones.to(self.device)
         )
-        actor_loss.backward()
-        self.actor_optimizer.step()
 
-        # ---------------------- Critic Losses ----------------------
+        # 1️⃣ Compute Next-State Value
+        next_value = self.value(next_states)
 
-        # compute next value for target Q calculation
-        next_value = self.value_network(next_states)
+        # 2️⃣ Compute Critic Loss
+        critic1_loss, critic1_pred_q, critic1_target_q = self.critic1.compute_critic_loss(states, actions, rewards, dones, next_value, gamma=0.99)
+        critic2_loss, critic2_pred_q, critic2_target_q = self.critic2.compute_critic_loss(states, actions, rewards, dones, next_value, gamma=0.99)
 
-        # compute Critic 1 Loss
         self.critic1_optimizer.zero_grad()
-        critic1_loss, critic1_pred_q, critic1_target_q = self.critic1_network.compute_critic_loss(
-            states=states,
-            actions=actions,
-            rewards=rewards,
-            dones=dones,
-            next_value=next_value,
-            gamma=self.gamma
-        )
         critic1_loss.backward()
-        clip_grad_norm_(self.critic1_network.parameters(), self.clip_grad_param)
         self.critic1_optimizer.step()
 
-        # compute Critic 2 Loss
         self.critic2_optimizer.zero_grad()
-        critic2_loss, critic2_pred_q, critic2_target_q = self.critic2_network.compute_critic_loss(
-            states=states,
-            actions=actions,
-            rewards=rewards,
-            dones=dones,
-            next_value=next_value,
-            gamma=self.gamma
-        )
         critic2_loss.backward()
-        clip_grad_norm_(self.critic2_network.parameters(), self.clip_grad_param)
         self.critic2_optimizer.step()
 
-        # update target networks
-        self.update_target_networks(self.critic1_network, self.critic1_target_network)
-        self.update_target_networks(self.critic2_network, self.critic2_target_network)
-
-        # ---------------------- Value Loss ----------------------
-
+        # 3️⃣ Compute Value Loss
+        value_loss = self.value.compute_value_loss(states, actions, self.critic1, self.critic2, expectile=0.95)
         self.value_optimizer.zero_grad()
-        value_loss = self.value_network.compute_value_loss(
-            states=states,
-            actions=actions,
-            critic1_target_network=self.critic1_target_network,
-            critic2_target_network=self.critic2_target_network,
-            expectile=self.expectile
-        )
         value_loss.backward()
         self.value_optimizer.step()
 
-        # return losses and Q-values for logging or further processing
-        return actor_loss.item(), critic1_loss.item(), critic1_pred_q, critic1_target_q, critic2_loss.item(), critic2_pred_q, critic2_target_q, value_loss.item()
+        # 4️⃣ Compute Actor Loss (Advantage-Weighted Regression)
+        with torch.no_grad():
+            target_q1 = self.critic1(states, actions)
+            target_q2 = self.critic2(states, actions)
+            min_Q = torch.min(target_q1, target_q2)
+            current_value = self.value(states)
+
+            advantage = (min_Q - current_value)
+            advantage = (advantage - advantage.mean()) / (advantage.std() + 1e-6)  # Normalize
+            advantage = torch.clamp(advantage, min=-10, max=10)  # Prevent extreme values
+
+            temperature = 0.2  # Try increasing this value
+            exp_advantage = torch.exp(advantage / temperature)
+            exp_advantage = torch.clamp(exp_advantage, max=20.0)  # Reduce scale
+
+        # Convert logits into probabilities - Compute actor loss
+        logits = self.actor(states)
+        log_probs = F.log_softmax(logits, dim=-1) + 1e-6  # log(0) issue +1e-6
+        log_probs = log_probs.gather(1, actions.unsqueeze(-1)).squeeze(-1)  # Extract selected action log-prob
+
+        # Use correct weighting in actor loss
+        actor_loss = -torch.mean(exp_advantage * log_probs)
+
+        self.actor_optimizer.zero_grad()
+        actor_loss.backward()
+        self.actor_optimizer.step()
+
+        return (
+            actor_loss.item(),
+            critic1_loss.item(), critic1_pred_q, critic1_target_q,
+            critic2_loss.item(), critic2_pred_q, critic2_target_q,
+            value_loss.item()
+        )
+

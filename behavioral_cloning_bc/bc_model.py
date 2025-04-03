@@ -37,7 +37,6 @@ class BCModel(nn.Module):
 
     def _get_conv_output_dim(self):
         # Create a dummy input to pass through conv layers
-        #dummy_input = torch.zeros(1, 3, 105, 80)  # Assuming resized input of 84x84 -----------------
         dummy_input = torch.zeros(1, 3, 210, 160)
         x = F.relu(self.conv1(dummy_input))
         x = F.relu(self.conv2(x))

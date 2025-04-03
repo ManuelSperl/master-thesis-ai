@@ -1,4 +1,5 @@
 import os
+import shutil
 from torch.utils.tensorboard import SummaryWriter
 
 class TensorBoardLogger:
