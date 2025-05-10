@@ -1,6 +1,8 @@
 # utils.py
 
 import gymnasium as gym
+import torch
+import gc
 import os
 import io
 import base64
@@ -48,9 +50,9 @@ def show_videos(video_data):
 
 
 # Updated create_env function
-def create_env(logger, seed, env_id='', capture_video=True, dataset_name='', trial_number=''):
+def create_env(logger, seed, env_id='', capture_video=True, dataset_name='', seed_number=''):
     # Determine video directory
-    video_dir = logger.get_video_dir(dataset_name, trial_number)
+    video_dir = logger.get_video_dir(dataset_name, seed_number)
     os.makedirs(video_dir, exist_ok=True)
 
     # Create environment
@@ -77,17 +79,7 @@ def create_env(logger, seed, env_id='', capture_video=True, dataset_name='', tri
     #print("Determined Action Size:", env.action_space.n)
 
     return env, env.action_space.n
-    
 
-def save_loss_curves(loss_data, filename):
-    """
-    Save the loss curves data to a file.
-    
-    :param loss_data: Dictionary containing the loss curves data.
-    :param filename: Name of the file to save the loss data.
-    """
-    with open(filename, 'wb') as f:
-        pickle.dump(loss_data, f)
 
 def save_return_stats(data, filename):
     """
@@ -96,59 +88,13 @@ def save_return_stats(data, filename):
     :param loss_data: Dictionary containing the loss curves data.
     :param filename: Name of the file to save the loss data.
     """
+    os.makedirs(os.path.dirname(filename), exist_ok=True)  # Ensure directory exists
     with open(filename, 'wb') as f:
         pickle.dump(data, f)
 
-def load_loss_curves(filename):
-    """
-    Load the loss curves data from a file.
-    
-    :param filename: Name of the file to load the loss data.
-    
-    :return: Loaded loss data.
-    """
-    with open(filename, 'rb') as f:
-        return pickle.load(f)
-    
-def load_iql_return_stats(filename):
-    """
-    Load the IQL return stats data from a file.
-    
-    :param filename: Name of the file to load the loss data.
-    
-    :return: Loaded loss data.
-    """
-    with open(filename, 'rb') as f:
-        return pickle.load(f)
-
-def plot_losses_and_rewards(train_losses, test_losses, rewards, dataset_name, trials):
-    """
-    Plot training, testing losses and rewards.
-
-    :param train_losses: list of training losses
-    :param test_losses: list of testing losses
-    :param rewards: list of rewards
-    :param dataset_name: name of the dataset
-    :param trials: number of trials
-    """
-    # set up the plot, with corresponding titles
-    fig, ax = plt.subplots(1, 3, figsize=(18, 5))
-    ax[0].set_title(f'Training Loss - {dataset_name}')
-    ax[1].set_title(f'Test Loss - {dataset_name}')
-    ax[2].set_title(f'Rewards per Epoch - {dataset_name}')
-
-    # loop through trials and plot the losses and rewards
-    for trial in range(trials):
-        ax[0].plot(train_losses[trial], label=f'Trial {trial+1}')
-        ax[1].plot(test_losses[trial], label=f'Trial {trial+1}')
-        ax[2].plot(rewards[trial], label=f'Trial {trial+1}') # plot rewards per epoch
-
-    for a in ax:
-        a.set_xlabel('Epoch')
-        a.legend()
-
-    ax[0].set_ylabel('Loss')
-    ax[2].set_ylabel('Total Reward')  # set y label for rewards plot
-
-    plt.tight_layout()
-    plt.show()
+def free_up_memory(used_vars):
+    """Free up memory by deleting specified variables."""
+    for var in used_vars:
+        del var
+    torch.cuda.empty_cache()
+    gc.collect()

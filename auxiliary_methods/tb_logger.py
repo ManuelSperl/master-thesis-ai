@@ -1,3 +1,5 @@
+# tb_logger.py
+
 import os
 import shutil
 from torch.utils.tensorboard import SummaryWriter
@@ -34,13 +36,13 @@ class TensorBoardLogger:
         if step is not None:
             self.writer.add_scalar(name, value, step)
 
-    # Updated get_video_dir to accept both dataset_name and trial_number
-    def get_video_dir(self, dataset_name='', trial_number=''):
+    # Updated get_video_dir to accept both dataset_name and seed_number
+    def get_video_dir(self, dataset_name='', seed_number=''):
         """
-        Return the directory for saving videos, including dataset type and trial number in the path.
+        Return the directory for saving videos, including dataset type and seed number in the path.
         """
-        trial_str = f"trial_{trial_number}" if trial_number else ""
-        video_dir = os.path.join(self.basepath, "videos", dataset_name, trial_str)
+        seed_str = f"seed_{seed_number}" if seed_number else ""
+        video_dir = os.path.join(self.basepath, "videos", dataset_name, seed_str)
         os.makedirs(video_dir, exist_ok=True)
         return video_dir
 

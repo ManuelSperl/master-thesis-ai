@@ -3,6 +3,7 @@
 import pickle
 import numpy as np
 import random
+from tqdm import tqdm
 import torch
 import os
 import matplotlib.pyplot as plt
@@ -76,6 +77,7 @@ def set_all_seeds(seed):
 
     set_random_seed(seed)  # For stable_baselines3
 
+
 def save_dataset(dataset, path, filename):
     """
     Saves a dataset to a specified path and file.
@@ -95,6 +97,74 @@ def save_dataset(dataset, path, filename):
         pickle.dump(dataset, f)
 
     print(f"Dataset saved to {full_path}")
+
+
+def generate_dataset_until_n(env, model, target_size=150_000, perturbation=False, perturbation_level=0.05, save_path='', file_name='', plotting=False):
+    """
+    Generates a dataset with a fixed number of transitions (target_size) using an expert policy.
+    Optionally perturbs actions to simulate suboptimality.
+
+    :param env: Gym or VecEnv environment object (Seaquest)
+    :param model: Trained expert model (e.g., DQN, PPO)
+    :param target_size: Total number of transitions to collect
+    :param perturbation: Whether to apply random action perturbation
+    :param perturbation_level: Proportion of transitions to perturb (e.g., 0.05 for 5%)
+    :param save_path: Directory to save the dataset
+    :param file_name: File name for the saved dataset
+    :param plotting: If True, include original and perturbed actions + flag
+    :return: The full list of transitions
+    """
+    tqdm.write(f"Generating dataset with {target_size} transitions...")
+
+    dataset = []
+    perturbed_count = 0
+
+    pbar = tqdm(total=target_size, desc="Collecting transitions")
+
+    while len(dataset) < target_size:
+        obs, _ = env.reset()
+        done = False
+
+        while not done and len(dataset) < target_size:
+            # Predict action using expert model
+            action, _ = model.predict(obs, deterministic=True)
+            action = int(action)
+            original_action = action
+            perturbed = False
+
+            # Apply perturbation (only if different)
+            if perturbation and random.random() < perturbation_level:
+                all_actions = list(range(env.action_space.n))
+                all_actions.remove(action)
+                action = random.choice(all_actions)
+                perturbed = True
+                perturbed_count += 1
+
+            # Take a step
+            new_obs, reward, done = env.step(action)[:3]
+
+            # Append to dataset
+            if plotting:
+                dataset.append((obs, original_action, action, reward, new_obs, done, perturbed))
+            else:
+                dataset.append((obs, action, reward, new_obs, done))
+
+            obs = new_obs
+            pbar.update(1)
+
+    pbar.close()
+    env.close()
+
+    print(f"Final dataset length: {len(dataset)}")
+    print(f"Number of perturbed actions: {perturbed_count}")
+
+    # Adjust filename if needed
+    if plotting:
+        file_name = file_name.replace('.pkl', '_plotting.pkl')
+
+    save_dataset(dataset, save_path, file_name)
+    return dataset
+
 
 def load_dataset(filename):
     """
