@@ -51,7 +51,7 @@ def evaluate_BVE_reward(env, agent, n_episodes, device, max_steps_per_episode=10
     return rewards
 
 def train_and_evaluate_BVE(dataloaders, epochs, seeds, dataset, env_id, seed, device):
-    logdir = 'agent_methods/behavior_value_estimation/bve_logs'
+    logdir = 'agent_methods/behavior_value_estimation_bve/bve_logs'
     stats_to_save = {}
 
     for dataset_name, loaders in ((d, l) for d, l in dataloaders.items() if d == dataset):

@@ -8,4 +8,4 @@
 # Ignore logs
 agent_methods/behavioral_cloning_bc/bc_logs/
 agent_methods/implicit_q_learning_iql/iql_logs/
-agent_methods/behavior_value_estimation/bve_logs/
+agent_methods/behavior_value_estimation_bve/bve_logs/

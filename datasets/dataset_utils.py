@@ -6,6 +6,7 @@ import random
 from tqdm import tqdm
 import torch
 import os
+import gc
 import matplotlib.pyplot as plt
 import gymnasium as gym
 from stable_baselines3.common.utils import set_random_seed
@@ -19,6 +20,35 @@ importlib.reload(datasets.seaquest_dataset)
 
 # Import SeaquestDataset from a separate module
 from datasets.seaquest_dataset import SeaquestDataset
+
+def evaluate_dqn_agent(env, model, num_episodes=5):
+    episode_rewards = []
+    action_counts = {}
+    # use tqdm
+    for episode in tqdm(range(num_episodes)):
+        obs, info = env.reset()
+        done = False
+        total_rewards = 0
+        
+        while not done:
+            action, _ = model.predict(obs, deterministic=True)
+
+            # Convert action to scalar if it's a NumPy array
+            if isinstance(action, np.ndarray):
+                action = action.item()
+                
+            obs, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
+            total_rewards += reward
+            # Log action
+            action_counts[action] = action_counts.get(action, 0) + 1
+            
+        episode_rewards.append(total_rewards)
+        
+    average_reward = np.mean(episode_rewards)
+    print(f"Average Reward over {num_episodes} episodes: {average_reward}")
+    print(f"Action Counts: {action_counts}")
+    return average_reward, action_counts
 
 # Define worker_init_fn at the top level
 def worker_init_fn(worker_id, seed):
@@ -99,7 +129,7 @@ def save_dataset(dataset, path, filename):
     print(f"Dataset saved to {full_path}")
 
 
-def generate_dataset_until_n(env, model, target_size=150_000, perturbation=False, perturbation_level=0.05, save_path='', file_name='', plotting=False):
+def generate_dataset(env, model, target_size=150_000, perturbation=False, perturbation_level=0.05, save_path='', file_name='', for_stats=False):
     """
     Generates a dataset with a fixed number of transitions (target_size) using an expert policy.
     Optionally perturbs actions to simulate suboptimality.
@@ -111,28 +141,36 @@ def generate_dataset_until_n(env, model, target_size=150_000, perturbation=False
     :param perturbation_level: Proportion of transitions to perturb (e.g., 0.05 for 5%)
     :param save_path: Directory to save the dataset
     :param file_name: File name for the saved dataset
-    :param plotting: If True, include original and perturbed actions + flag
+    :param for_stats: If True, include original and perturbed actions + flag
     :return: The full list of transitions
     """
-    tqdm.write(f"Generating dataset with {target_size} transitions...")
+    tqdm.write(f"Generating dataset with at least {target_size} transitions (full episodes only)...")
 
     dataset = []
     perturbed_count = 0
+    transition_counter = 0
 
-    pbar = tqdm(total=target_size, desc="Collecting transitions")
+    pbar = tqdm(
+        total=target_size,
+        desc="Collecting transitions",
+        dynamic_ncols=False,
+        initial=0,
+        bar_format="Collecting transitions: {n_fmt}/150000 [{elapsed}<{remaining}, {rate_fmt}]"
+    )
 
-    while len(dataset) < target_size:
+    while transition_counter < target_size:
         obs, _ = env.reset()
         done = False
+        episode_transitions = []
 
-        while not done and len(dataset) < target_size:
+        while not done:
             # Predict action using expert model
             action, _ = model.predict(obs, deterministic=True)
             action = int(action)
             original_action = action
             perturbed = False
 
-            # Apply perturbation (only if different)
+            # Apply perturbation
             if perturbation and random.random() < perturbation_level:
                 all_actions = list(range(env.action_space.n))
                 all_actions.remove(action)
@@ -140,17 +178,20 @@ def generate_dataset_until_n(env, model, target_size=150_000, perturbation=False
                 perturbed = True
                 perturbed_count += 1
 
-            # Take a step
+            # Step environment
             new_obs, reward, done = env.step(action)[:3]
 
-            # Append to dataset
-            if plotting:
-                dataset.append((obs, original_action, action, reward, new_obs, done, perturbed))
+            if for_stats:
+                episode_transitions.append((obs, original_action, action, reward, new_obs, done, perturbed))
             else:
-                dataset.append((obs, action, reward, new_obs, done))
+                episode_transitions.append((obs, action, reward, new_obs, done))
 
             obs = new_obs
             pbar.update(1)
+
+        # Only after episode ends:
+        dataset.extend(episode_transitions)
+        transition_counter += len(episode_transitions)
 
     pbar.close()
     env.close()
@@ -159,9 +200,10 @@ def generate_dataset_until_n(env, model, target_size=150_000, perturbation=False
     print(f"Number of perturbed actions: {perturbed_count}")
 
     # Adjust filename if needed
-    if plotting:
-        file_name = file_name.replace('.pkl', '_plotting.pkl')
+    if for_stats:
+        file_name = file_name.replace('.pkl', '_stats.pkl')
 
+    os.makedirs(save_path, exist_ok=True)
     save_dataset(dataset, save_path, file_name)
     return dataset
 
@@ -189,102 +231,6 @@ def print_dataset_samples(name, dataset, num_samples=3):
     for i, sample in enumerate(dataset[:num_samples]):
         print(f"Entry {i}: {sample}")
     
-
-def check_dataset(check, env, num_samples=3, dataset=None, dataset_perturbed=None):
-    """
-    ...
-
-    :param check: ...
-    :param dataset: ...
-    :param num_samples: ...
-    """
-    
-    # 1 - Check the Dataset Length
-    if check == 1:
-        print(f"Total transitions collected: {len(dataset)}")
-    
-    # 2 - Inspect Sample Transitions
-    elif check == 2:
-        # Print the first few entries of the dataset to check their structure
-        for i in range(num_samples):
-            obs, action, reward, new_obs, done = dataset[i]
-            print(f"Transition {i+1}:")
-            print(f"  Observation shape: {obs.shape}")
-            print(f"  Action: {action}")
-            print(f"  Reward: {reward}")
-            print(f"  New Observation shape: {new_obs.shape}")
-            print(f"  Done flag: {done}")
-            print("-" * 30)
-    
-    # 3 - Visualize Observations
-    elif check == 3:
-        # Visualize the first observation
-        plt.imshow(dataset[0][0])
-        plt.title("First Observation")
-        plt.axis('off')
-        plt.show()
-    
-    # 4 - Validate Actions Against the Action Space
-    elif check == 4:
-        valid_actions = list(range(env.action_space.n))
-        invalid_actions = [action for _, action, _, _, _ in dataset if action not in valid_actions]
-
-        if invalid_actions:
-            print(f"Found invalid actions: {invalid_actions}")
-        else:
-            print("All actions are valid.")
-    
-    # 5 - Analyze Reward Distribution
-    elif check == 5:
-        rewards = [reward for _, _, reward, _, _ in dataset]
-        print(f"Reward Statistics:")
-        print(f"  Total rewards collected: {sum(rewards)}")
-        print(f"  Average reward per transition: {np.mean(rewards)}")
-        print(f"  Min reward: {np.min(rewards)}")
-        print(f"  Max reward: {np.max(rewards)}")
-    
-    # 6 - Check Done Flags and Episode Termination
-    elif check == 6:
-        done_flags = [done for _, _, _, _, done in dataset]
-        num_episodes_recorded = done_flags.count(True)
-        print(f"Number of episodes recorded: {num_episodes_recorded}")
-    
-    # 7 - Verify Sequential Consistency
-    elif check == 7:
-        for i in range(len(dataset) - 1):
-            obs_current = dataset[i][3]  # new_obs of current
-            obs_next = dataset[i + 1][0]  # obs of next
-            done = dataset[i][4]
-            
-            if not done:
-                if not np.array_equal(obs_current, obs_next):
-                    print(f"Inconsistency found between transitions {i} and {i+1}")
-                    break
-        else:
-            print("All sequential observations are consistent.")
-    
-    # 8 - Validate Data Types
-    elif check == 8:
-        # Check data types of the first transition
-        obs_dtype = dataset[0][0].dtype
-        action_dtype = type(dataset[0][1])
-        reward_dtype = type(dataset[0][2])
-        done_dtype = type(dataset[0][4])
-
-        print(f"Observation dtype: {obs_dtype}")
-        print(f"Action dtype: {action_dtype}")
-        print(f"Reward dtype: {reward_dtype}")
-        print(f"Done dtype: {done_dtype}")
-    
-    # 9 - Check Perturbations (If Applied)
-    elif check == 9:
-        # Assuming you have both datasets
-        for i in range(num_samples):
-            obs_orig = dataset[i][0]
-            obs_perturbed = dataset_perturbed[i][0]
-            difference = np.mean(np.abs(obs_orig.astype(np.float32) - obs_perturbed.astype(np.float32)))
-            print(f"Average difference in observations at transition {i+1}: {difference}")
-
 def preprocess_and_split(data, seed, test_size=0.2, tune_size=0.1):
     """
     Splits the dataset into training, tuning, and test sets.
@@ -380,21 +326,6 @@ def inspect_dataset_sample(dataloader, num_samples=1):
         print(f"Next States Batch Shape: {next_states.shape}")# Expected: (batch_size, channels, height, width)
         print(f"Dones Batch Shape: {dones.shape}")            # Expected: (batch_size,)
 
-        print(f"States Batch Data Type: {states.dtype}")      # Expected: torch.float32
-        print(f"Actions Batch Data Type: {actions.dtype}")    # Expected: torch.long
-        print(f"Rewards Batch Data Type: {rewards.dtype}")    # Expected: torch.float32
-        print(f"Next States Batch Data Type: {next_states.dtype}")  # Expected: torch.float32
-        print(f"Dones Batch Data Type: {dones.dtype}")        # Expected: torch.float32 or torch.bool
-
-        # Display first sample's information
-        print("\nFirst Sample Details:")
-        print(f"First State Shape: {states[0].shape}")        # Expected: (channels, height, width)
-        print(f"First State Min/Max: {states[0].min().item():.4f}/{states[0].max().item():.4f}")  # Should be between 0 and 1
-        print(f"First Action: {actions[0].item()}")
-        print(f"First Reward: {rewards[0].item():.4f}")
-        print(f"First Next State Shape: {next_states[0].shape}")  # Expected: (channels, height, width)
-        print(f"First Done: {dones[0].item()}")
-
         # Stop after num_samples are inspected
         if i + 1 >= num_samples:
             break
@@ -411,3 +342,176 @@ def analyze_action_distribution(dataset):
     action_distribution = dict(zip(unique_actions, counts))
     print("Action distribution in expert dataset:", action_distribution)
     return action_distribution
+
+def validate_dataset(path, expected_length=None, expect_plotting_format=True, verbose=True):
+    """
+    Validates a dataset generated with the expert_dataset function.
+
+    :param path: Path to the .pkl dataset file
+    :param expected_length: If provided, will warn if dataset length is different
+    :param expect_plotting_format: If True, expects (obs, original_action, action, reward, new_obs, done, perturbed)
+    :param verbose: Whether to print full results
+    :return: True if valid, False if issues found
+    """
+    try:
+        with open(path, 'rb') as f:
+            dataset = pickle.load(f)
+    except Exception as e:
+        print(f"Failed to load {path}: {e}")
+        return False
+
+    is_valid = True
+    total = len(dataset)
+
+    if expected_length and total != expected_length:
+        print(f"Length mismatch: expected {expected_length}, got {total}")
+        is_valid = False
+
+    has_perturb_info = expect_plotting_format and len(dataset[0]) == 7
+    if expect_plotting_format and not has_perturb_info:
+        print("Expected 7-tuple format (with perturbation), but got 5-tuple")
+        return False
+
+    perturbed_count = 0
+    wrong_perturbs = 0
+    diagonal_hits = 0
+    action_space_size = 18  # hardcoded for Seaquest
+
+    for t in dataset:
+        if has_perturb_info:
+            _, original, perturbed, _, _, _, is_perturbed = t
+            if is_perturbed:
+                perturbed_count += 1
+                if original == perturbed:
+                    diagonal_hits += 1
+                    wrong_perturbs += 1
+            else:
+                if original != perturbed:
+                    wrong_perturbs += 1
+        else:
+            # nothing to validate in non-plotting datasets
+            break
+
+    if verbose:
+        print(f"{os.path.basename(path)}")
+        print(f"    Total transitions      : {total}")
+        print(f"    Perturbed actions      : {perturbed_count}")
+        if has_perturb_info:
+            print(f"    Wrong perturbations    : {wrong_perturbs}")
+            print(f"    Diagonal (same action) : {diagonal_hits}")
+            print(f"    Perturbation rate      : {perturbed_count / total:.2%}")
+
+    if wrong_perturbs > 0:
+        print("Found invalid perturbations (e.g., perturbed=True but original == action)")
+        is_valid = False
+    else:
+        print("Perturbation logic valid.")
+
+    rewards = []
+    lengths = []
+    current_reward = 0
+    current_length = 0
+
+    for transition in dataset:
+        if expect_plotting_format and len(transition) == 7:
+            _, _, _, reward, _, done, _ = transition
+        else:
+            _, _, reward, _, done = transition
+
+        current_reward += reward
+        current_length += 1
+
+        if done:
+            rewards.append(current_reward)
+            lengths.append(current_length)
+            current_reward = 0
+            current_length = 0
+
+    # Append last episode if it wasn't terminated properly (cut off)
+    if current_length > 0:
+        rewards.append(current_reward)
+        lengths.append(current_length)
+
+    result = {
+        "total_transitions": len(dataset),
+        "num_episodes": len(rewards),
+        "min_reward": min(rewards),
+        "max_reward": max(rewards),
+        "mean_reward": sum(rewards) / len(rewards),
+        "min_length": min(lengths),
+        "max_length": max(lengths),
+        "mean_length": sum(lengths) / len(lengths),
+        "cut_off_last_episode": not dataset[-1][-2],  # done=False
+        "last_episode_length": current_length if current_length > 0 else None
+    }
+
+    if verbose:
+        print(f"Episode Analysis for {os.path.basename(path)}")
+        print(f"    ➤ Action space size    : {action_space_size}")
+        print(f"    ➤ Number of episodes   : {result['num_episodes']}")
+        print(f"    ➤ Reward range         : {result['min_reward']} to {result['max_reward']}")
+        print(f"    ➤ Mean reward          : {result['mean_reward']:.2f}")
+        print(f"    ➤ Episode Length range : {result['min_length']} to {result['max_length']}")
+        print(f"    ➤ Mean episode length  : {result['mean_length']:.2f}")
+        print(f"    ➤ Last episode cut?    : {'Yes' if result['cut_off_last_episode'] else 'No'}")
+        print(f"    ➤ Last episode length  : {result['last_episode_length'] if result['cut_off_last_episode'] else 'N/A'}")
+
+
+    return is_valid, result
+
+
+def load_and_prepare_dataset(dataset_path, batch_size=64, seed=0, test_size=0.2, tune_size=0.1, dataloaders_dict=None):
+    """
+    Loads a dataset, preprocesses it, splits into train/test/tune sets,
+    creates dataloaders, and stores them in the provided dictionary.
+
+    :param dataset_path: Path to the .pkl dataset file
+    :param batch_size: Batch size for dataloaders
+    :param seed: Random seed for splitting
+    :param test_size: Fraction of data for test set
+    :param tune_size: Fraction of training data for tuning
+    :param dataloaders_dict: Optional dictionary to store the loaders into
+    :return: Dictionary of dataloaders { 'train', 'test', 'tuning' }
+    """
+    if dataloaders_dict is None:
+        dataloaders_dict = {}
+
+    dataset_name = os.path.splitext(os.path.basename(dataset_path))[0]
+
+    print(f"=== Loading {dataset_name} dataset ===")
+
+    # Load dataset
+    data = load_dataset(dataset_path)
+
+    print(f"Preprocessing and splitting {dataset_name} dataset...")
+
+    # Preprocess and split
+    train_data, test_data, tune_data = preprocess_and_split(
+        data=data,
+        seed=seed,
+        test_size=test_size,
+        tune_size=tune_size
+    )
+
+    print(f"Creating dataloaders for {dataset_name}...")
+
+    train_loader, test_loader, tune_loader = create_dataloaders(
+        train_data,
+        test_data,
+        tune_data,
+        batch_size=batch_size,
+        seed=seed
+    )
+
+    dataloaders_dict[dataset_name] = {
+        'train': train_loader,
+        'test': test_loader,
+        'tuning': tune_loader
+    }
+
+    # Clear variables
+    del data, train_data, test_data, tune_data
+    gc.collect()
+
+    print(f"✅ Dataloaders ready for: {dataset_name}")
+    return dataloaders_dict
