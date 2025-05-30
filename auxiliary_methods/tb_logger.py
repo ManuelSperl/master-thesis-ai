@@ -11,7 +11,7 @@ class TensorBoardLogger:
 
     def __init__(self, logdir, dataset_type, perturbation_level, params=None):
         # Create the desired directory structure
-        self.basepath = os.path.join(logdir, dataset_type, f"perturbation_{perturbation_level}")
+        self.basepath = os.path.join(logdir, dataset_type, f"{perturbation_level}")
         self.log_dir = os.path.join(self.basepath, "logs")
         os.makedirs(self.log_dir, exist_ok=True)
 
