@@ -61,7 +61,7 @@ def evaluate_BC_reward(env, model, n_episodes, device, max_steps_per_episode=100
     return rewards
 
 def train_and_evaluate_BC(dataloaders, device, seeds, epochs, dataset, env_id, seed):
-    logdir = 'agent_methods/behavioral_cloning_bc/bc_logs'
+    logdir = 'offline_rl_models/behavioral_cloning_bc/bc_logs'
     stats_to_save = {}
 
     for dataset_name, loaders in ((d, l) for d, l in dataloaders.items() if d == dataset):
@@ -101,7 +101,7 @@ def train_and_evaluate_BC(dataloaders, device, seeds, epochs, dataset, env_id, s
                     loss.backward()
                     optimizer.step()
 
-                    train_losses.append(loss)
+                    train_losses.append(loss.item())
                     train_steps.append(train_step)
                     bc_logger.log(f'{main_tag}/Train Loss', loss, train_step)
                     train_step += 1
@@ -117,16 +117,16 @@ def train_and_evaluate_BC(dataloaders, device, seeds, epochs, dataset, env_id, s
                         logits = bc_model(states)
                         loss = criterion(logits, actions)
 
-                        val_losses.append(loss)
-                        epoch_val_losses.append(loss)
+                        val_losses.append(loss.item())
+                        epoch_val_losses.append(loss.item())
                         val_steps.append(val_step)
-                        bc_logger.log(f'{main_tag}/Validation Loss', loss, val_step)
+                        bc_logger.log(f'{main_tag}/Validation Loss', loss.item(), val_step)
                         val_step += 1
 
                         free_up_memory([states, actions, logits, loss])
 
                 if epoch_val_losses:
-                    scheduler.step(np.mean([loss.item() for loss in epoch_val_losses]))
+                    scheduler.step(np.mean(epoch_val_losses))
 
                 # ---- Reward Evaluation ----
                 reward_list = evaluate_BC_reward(bc_env, bc_model, n_episodes=15, device=device, max_steps_per_episode=3000)

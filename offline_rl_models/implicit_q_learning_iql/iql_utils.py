@@ -72,28 +72,32 @@ def evaluate_IQL_reward(env, agent, n_episodes, device, max_steps_per_episode=10
     return rewards
 
 def train_and_evaluate_IQL(dataloaders, epochs, seeds, dataset, env_id, seed, device):
-    logdir = 'agent_methods/implicit_q_learning_iql/iql_logs'
+    logdir = 'offline_rl_models/implicit_q_learning_iql/iql_logs'
     stats_to_save = {}
 
     for dataset_name, loaders in ((d, l) for d, l in dataloaders.items() if d == dataset):
         print(f"Training IQL on {dataset_name}")
 
+        # Extract metadata
         parts = dataset_name.split('_')
-        dataset_type = '_'.join(parts[:2]).lower()
-        perturbation_level = parts[-1]
+        dataset_type = '_'.join(parts[:2]).lower()  # e.g., 'expert_dataset'
+        perturbation_level = parts[-1]  # e.g., '20'
 
+        # Init logs
         all_actor_losses, all_critic1_losses, all_critic2_losses, all_value_losses = [], [], [], []
         all_val_losses, all_rewards = [], []
         all_actor_steps, all_critic1_steps, all_critic2_steps, all_value_steps = [], [], [], []
         all_val_steps, all_reward_steps = [], []
         q_values_by_seed = {}
 
+        # loop through seeds
         for seed_idx in range(seeds):
             print(f"-- Starting Seed {seed_idx + 1}/{seeds} --")
 
+            # ---- Setup Phase ----
             iql_logger = TensorBoardLogger(logdir, dataset_type, perturbation_level)
-            env, action_dim = create_env(iql_logger, seed, env_id, True, seed_number=f'{seed_idx+1}')
-            agent = IQLModel(action_dim, device, seed, seed_idx)
+            iql_env, iql_action_dim = create_env(iql_logger, seed, env_id, True, seed_number=f'{seed_idx+1}')
+            iql_agent = IQLModel(iql_action_dim, device, seed, seed_idx)
             criterion = nn.CrossEntropyLoss()
 
             main_tag = f'{dataset_name}_Seed_{seed_idx + 1}'
@@ -105,17 +109,18 @@ def train_and_evaluate_IQL(dataloaders, epochs, seeds, dataset, env_id, seed, de
             q_values_by_seed[seed_idx] = {'avg_pred_q_values': {}, 'avg_target_q_values': {}}
             actor_step = critic1_step = critic2_step = value_step = val_step = reward_step = 0
 
+            # start Offline Training -> loop through epochs
             for epoch in tqdm(range(epochs), desc='Epochs', leave=True):
                 # ---- Train Phase ----
-                agent.train()
-                for states, actions, rewards_, next_states, dones, *_ in loaders['train']:
+                iql_agent.train()
+                for states, actions, rews, next_states, _, dones, *_ in loaders['train']:
                     states = states.to(device)
                     actions = actions.to(device)
-                    rewards_ = rewards_.unsqueeze(1).to(device)
+                    rews = rews.unsqueeze(1).to(device)
                     next_states = next_states.to(device)
                     dones = dones.unsqueeze(1).to(device)
 
-                    out = agent.learn((states, actions, rewards_, next_states, dones))
+                    out = iql_agent.learn((states, actions, rews, next_states, dones))
                     a_loss, c1_loss, c1_q, c1_tgt, c2_loss, c2_q, c2_tgt, v_loss = out
 
                     actor_losses.append(a_loss)
@@ -138,19 +143,20 @@ def train_and_evaluate_IQL(dataloaders, epochs, seeds, dataset, env_id, seed, de
                     iql_logger.log(f'{main_tag}/Value Loss', v_loss, value_step)
                     value_step += 1
 
+                    # Log Q-values with a shared step (e.g., critic1_step)
                     q_step = critic1_step
                     q_values_by_seed[seed_idx]['avg_pred_q_values'][q_step] = [(c1_q.mean().item() + c2_q.mean().item()) / 2]
                     q_values_by_seed[seed_idx]['avg_target_q_values'][q_step] = [(c1_tgt.mean().item() + c2_tgt.mean().item()) / 2]
 
-                    free_up_memory([states, actions, rewards_, next_states, dones])
+                    free_up_memory([states, actions, rews, next_states, dones])
 
                 # ---- Validation Phase ----
-                agent.actor.eval()
+                iql_agent.actor.eval()
                 epoch_val_losses = []
                 with torch.no_grad():
                     for states, actions, *_ in loaders['validation']:
                         states, actions = states.to(device), actions.to(device)
-                        logits = agent.actor(states)
+                        logits = iql_agent.actor(states)
                         loss = criterion(logits, actions)
 
                         val_losses.append(loss.item())
@@ -162,18 +168,19 @@ def train_and_evaluate_IQL(dataloaders, epochs, seeds, dataset, env_id, seed, de
                         free_up_memory([states, actions, logits, loss])
 
                 if epoch_val_losses:
-                    for opt in [agent.actor_optimizer, agent.critic1_optimizer, agent.critic2_optimizer, agent.value_optimizer]:
+                    for opt in [iql_agent.actor_optimizer, iql_agent.critic1_optimizer, iql_agent.critic2_optimizer, iql_agent.value_optimizer]:
                         for pg in opt.param_groups:
                             pg['lr'] *= 0.98 if np.mean(epoch_val_losses) > 0.5 else 1.0
-            
-                # ---- Reward Evaluation ----
-                reward_list = evaluate_IQL_reward(env, agent, n_episodes=15, device=device, max_steps_per_episode=3000)
+
+                # ---- Reward Phase ----
+                reward_list = evaluate_IQL_reward(iql_env, iql_agent, n_episodes=15, device=device, max_steps_per_episode=3000)
                 for r in reward_list:
                     rewards.append(r)
                     reward_steps.append(reward_step)
                     iql_logger.log(f'{main_tag}/Reward', r, reward_step)
                     reward_step += 1
 
+            # Store all seed data
             all_actor_losses.append(actor_losses)
             all_critic1_losses.append(critic1_losses)
             all_critic2_losses.append(critic2_losses)
@@ -189,17 +196,20 @@ def train_and_evaluate_IQL(dataloaders, epochs, seeds, dataset, env_id, seed, de
 
             print(f"Finished Training on {dataset_name}")
             print(f"    ➤ Avg Actor Loss: {np.mean(actor_losses):.5f}")
+            print(f"    ➤ Avg Critic1 Loss: {np.mean(critic1_losses):.5f}")
+            print(f"    ➤ Avg Critic2 Loss: {np.mean(critic2_losses):.5f}")
             print(f"    ➤ Avg Value Loss: {np.mean(value_losses):.5f}")
+            print(f"    ➤ Avg Validation Loss: {np.mean(val_losses):.5f}")
             print(f"    ➤ Avg Reward: {np.mean(rewards):.2f}")
 
             # Save the model
             print("Saving the model...")
             model_path = f"{logdir}/{dataset_type}/{perturbation_level}/iql_model_{perturbation_level}_seed{seed_idx + 1}.pth"
             os.makedirs(os.path.dirname(model_path), exist_ok=True)
-            torch.save(agent.state_dict(), model_path)
+            torch.save(iql_agent.state_dict(), model_path)
             print(f"Model saved to {model_path}")
 
-            env.close()
+            iql_env.close()
             time.sleep(1.5)
 
         stats_to_save = {

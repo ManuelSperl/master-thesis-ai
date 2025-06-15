@@ -80,7 +80,7 @@ class CriticNet(nn.Module):
         q_target = rewards + gamma * (1 - dones) * next_value.detach()
 
         # Clamp Q targets to stabilize learning
-        q_target = torch.clamp(q_target, min=-300, max=300)
+        q_target = torch.clamp(q_target, min=-100, max=100) # changed from -300 and 300 to -100 and 100
 
         loss = F.smooth_l1_loss(current_q_value, q_target)
 

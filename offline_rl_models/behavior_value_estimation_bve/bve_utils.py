@@ -51,7 +51,7 @@ def evaluate_BVE_reward(env, agent, n_episodes, device, max_steps_per_episode=10
     return rewards
 
 def train_and_evaluate_BVE(dataloaders, epochs, seeds, dataset, env_id, seed, device):
-    logdir = 'agent_methods/behavior_value_estimation_bve/bve_logs'
+    logdir = 'offline_rl_models/behavior_value_estimation_bve/bve_logs'
     stats_to_save = {}
 
     for dataset_name, loaders in ((d, l) for d, l in dataloaders.items() if d == dataset):
@@ -81,7 +81,7 @@ def train_and_evaluate_BVE(dataloaders, epochs, seeds, dataset, env_id, seed, de
             for epoch in tqdm(range(epochs), desc='Epochs'):
                 # ---- Training Phase ----
                 bve_agent.train()
-                for states, actions, rews, next_states, next_actions, dones in loaders['train']:
+                for states, actions, rews, next_states, next_actions, dones, *_ in loaders['train']:
                     states, actions = states.to(device), actions.to(device)
                     rews = rews.unsqueeze(1).to(device)
                     next_states = next_states.to(device)
@@ -104,7 +104,7 @@ def train_and_evaluate_BVE(dataloaders, epochs, seeds, dataset, env_id, seed, de
                 bve_agent.eval()
                 epoch_val_losses = []
                 with torch.no_grad():
-                    for states, actions, rews, next_states, next_actions, dones in loaders['validation']:
+                    for states, actions, rews, next_states, next_actions, dones, *_ in loaders['validation']:
                         states, actions = states.to(device), actions.to(device)
                         rews = rews.unsqueeze(1).to(device)
                         next_states = next_states.to(device)
@@ -126,10 +126,9 @@ def train_and_evaluate_BVE(dataloaders, epochs, seeds, dataset, env_id, seed, de
                 
                 # -- Learning rate decay based on validation loss --
                 if epoch_val_losses:
-                    mean_val = np.mean(epoch_val_losses)
                     for opt in [bve_agent.optimizer]:
                         for pg in opt.param_groups:
-                            pg['lr'] *= 0.98 if mean_val > 0.5 else 1.0
+                            pg['lr'] *= 0.98 if np.mean(epoch_val_losses) > 0.5 else 1.0
                 
                 # ---- Reward Evaluation ----
                 reward_list = evaluate_BVE_reward(bve_env, bve_agent, n_episodes=15, device=device, max_steps_per_episode=3000)

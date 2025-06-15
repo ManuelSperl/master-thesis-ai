@@ -74,19 +74,19 @@ class IQLModel(nn.Module):
 
         self.critic1_optimizer.zero_grad()
         critic1_loss.backward()
-        clip_grad_norm_(self.critic1.parameters(), 10.0)  # Stability fix
+        clip_grad_norm_(self.critic1.parameters(), 5.0)  # Stability fix # changed from 10.0 to 5.0
         self.critic1_optimizer.step()
 
         self.critic2_optimizer.zero_grad()
         critic2_loss.backward()
-        clip_grad_norm_(self.critic2.parameters(), 10.0)  # Stability fix
+        clip_grad_norm_(self.critic2.parameters(), 5.0)  # Stability fix
         self.critic2_optimizer.step()
 
         # 3. Compute Value Loss
         value_loss = self.value.compute_value_loss(states, actions, self.critic1, self.critic2, expectile=0.7)
         self.value_optimizer.zero_grad()
         value_loss.backward()
-        clip_grad_norm_(self.value.parameters(), 10.0)  # Stability fix
+        clip_grad_norm_(self.value.parameters(), 5.0)  # Stability fix
         self.value_optimizer.step()
 
         # 4. Compute Actor Loss (Advantage-Weighted Regression)
@@ -97,10 +97,10 @@ class IQLModel(nn.Module):
             current_value = self.value(states)
             advantage = min_q - current_value
 
-            # Stability Fix: clamp advantage range & temperature raised to 0.1 (was 0.03, in paper)
-            advantage = torch.clamp(advantage, min=-5.0, max=5.0)
+            # Stability Fix: clamp advantage range & temperature 0.1 (was 0.03, in paper)
+            advantage = torch.clamp(advantage, min=-2.0, max=2.0)
             positive_advantage_mask = (advantage > 0).float()
-            exp_advantage = torch.exp(advantage / 0.1) * positive_advantage_mask
+            exp_advantage = torch.clamp(torch.exp(advantage.detach() / 0.1), min=1e-3, max=100.0) * positive_advantage_mask
 
         logits = self.actor(states)
         log_probs = F.log_softmax(logits, dim=-1)
@@ -110,7 +110,7 @@ class IQLModel(nn.Module):
 
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
-        clip_grad_norm_(self.actor.parameters(), 10.0)  # Stability fix
+        clip_grad_norm_(self.actor.parameters(), 5.0)  # Stability fix
         self.actor_optimizer.step()
 
         # 5. Soft update of target value network
