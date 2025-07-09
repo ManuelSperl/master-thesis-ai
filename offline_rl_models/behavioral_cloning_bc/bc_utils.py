@@ -1,11 +1,8 @@
-# bc_utils.py contains utility functions for training and evaluating the Behavioral Cloning model.
+# bc_utils.py
 
-# ----- PyTorch imports -----
 import torch
 import torch.nn as nn
 import torch.optim as optim
-
-# ----- Python imports -----
 import gc
 import os
 import pickle
@@ -31,7 +28,17 @@ from offline_rl_models.behavioral_cloning_bc.bc_model import BCModel
     
 
 def evaluate_BC_reward(env, model, n_episodes, device, max_steps_per_episode=1000, debug=False):
-    """Evaluate the model by running it in the environment."""
+    """
+    Evaluate the model by running it in the environment.
+
+    :param env: The environment to evaluate the model in.
+    :param model: The trained model to evaluate.
+    :param n_episodes: Number of episodes to run for evaluation.
+    :param device: Device to run the evaluation on (CPU or GPU).
+    :param max_steps_per_episode: Maximum number of steps per episode.
+    :param debug: If True, print debug information.
+    :return: List of total rewards for each episode.
+    """
     rewards = []
 
     for episode in range(n_episodes):
@@ -61,6 +68,17 @@ def evaluate_BC_reward(env, model, n_episodes, device, max_steps_per_episode=100
     return rewards
 
 def train_and_evaluate_BC(dataloaders, device, seeds, epochs, dataset, env_id, seed):
+    """
+    Train and evaluate the Behavioral Cloning (BC) model on the specified dataset.
+
+    :param dataloaders: Dictionary containing train and validation DataLoaders.
+    :param device: Device to run the training and evaluation on (CPU or GPU).
+    :param seeds: Number of random seeds to use for training.
+    :param epochs: Number of training epochs.
+    :param dataset: Name of the dataset to train on.
+    :param env_id: Environment ID to create the environment.
+    :param seed: Global seed for reproducibility.
+    """
     logdir = 'offline_rl_models/behavioral_cloning_bc/bc_logs'
     stats_to_save = {}
 
@@ -148,7 +166,7 @@ def train_and_evaluate_BC(dataloaders, device, seeds, epochs, dataset, env_id, s
             print(f"    ➤ Avg Validation Loss: {np.mean(val_losses):.5f}")
             print(f"    ➤ Avg Reward: {np.mean(rewards):.2f}")
 
-            # Save the model
+            # save the model
             print("Saving the model...")
             model_save_path = f"{logdir}/{dataset_type}/{perturbation_level}/bc_model_{perturbation_level}_seed{seed_idx + 1}.pth"
             os.makedirs(os.path.dirname(model_save_path), exist_ok=True)

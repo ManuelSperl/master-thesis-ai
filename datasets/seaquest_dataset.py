@@ -5,26 +5,39 @@ import numpy as np
 from torch.utils.data import Dataset
 
 class SeaquestDataset(Dataset):
+    """
+    Custom dataset for the Seaquest environment.
+    """
     def __init__(self, data, transform=None):
         """
-        Args:
-            data (list): List of data samples, where each sample is a tuple
-                         (state, action, reward, next_state, done).
-            transform (callable, optional): Optional transform to be applied
-                                            on a sample.
+        Initializes the SeaquestDataset with data and an optional transform.
+
+        :param data: List of transitions, where each transition is a tuple of the form:
+            (obs, action, reward, next_obs, next_action, done, perturbed_flag, original_action)
+        :param transform: Optional transform to be applied on a sample.
         """
         self.data = data
         self.transform = transform
 
     def __len__(self):
+        """
+        Returns the number of samples in the dataset.
+        """
         return len(self.data)
 
     def __getitem__(self, idx):
-        # Get the data sample
+        """
+        Returns a single data sample from the dataset.
+
+        :param idx: Index of the sample to retrieve.
+        :return: A tuple containing:
+            (obs, action, reward, next_obs, next_action, done, perturbed_flag, original_action)
+        """
+        # get the data sample
         obs, action, reward, next_obs, next_action, done, perturbed, original_action = self.data[idx]
 
-        # Process observations (normalize and permute)
-        obs = torch.tensor(obs, dtype=torch.float32) / 255.0  # Normalize pixel values to [0, 1]
+        # process observations (normalize and permute)
+        obs = torch.tensor(obs, dtype=torch.float32) / 255.0  # normalize pixel values to [0, 1]
         obs = obs.permute(2, 0, 1)  # (channels, height, width)
 
         next_obs = torch.tensor(next_obs, dtype=torch.float32) / 255.0

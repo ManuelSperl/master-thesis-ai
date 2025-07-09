@@ -1,13 +1,10 @@
 # iql_utils.py 
 
-# ----- PyTorch imports -----
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import gymnasium as gym
 import time
-
-# ----- Python imports -----
 import numpy as np
 import gc
 import pandas as pd
@@ -37,7 +34,17 @@ importlib.reload(offline_rl_models.implicit_q_learning_iql.iql_model)
 from offline_rl_models.implicit_q_learning_iql.iql_model import IQLModel
 
 def evaluate_IQL_reward(env, agent, n_episodes, device, max_steps_per_episode=1000, debug=False):
-    ''' Evaluate the IQL agent on the environment for n_episodes '''
+    """
+    Evaluate the IQL agent on the given environment.
+
+    :param env: The environment to evaluate the agent on.
+    :param agent: The IQL agent to evaluate.
+    :param n_episodes: Number of episodes to run for evaluation.
+    :param device: Device to run the evaluation on (CPU or GPU).
+    :param max_steps_per_episode: Maximum number of steps per episode.
+    :param debug: If True, print debug information.
+    :return: List of total rewards for each episode.
+    """
     rewards = []
     agent.actor.eval()
 
@@ -72,18 +79,29 @@ def evaluate_IQL_reward(env, agent, n_episodes, device, max_steps_per_episode=10
     return rewards
 
 def train_and_evaluate_IQL(dataloaders, epochs, seeds, dataset, env_id, seed, device):
+    """
+    Train and evaluate the Implicit Q-Learning (IQL) model on the specified dataset.
+
+    :param dataloaders: Dictionary containing training and validation data loaders.
+    :param epochs: Number of training epochs.
+    :param seeds: Number of random seeds to use for training.
+    :param dataset: Name of the dataset to train on.
+    :param env_id: Environment ID for the IQL agent.
+    :param seed: Global seed for reproducibility.
+    :param device: Device to run the training on (CPU or GPU).
+    """
     logdir = 'offline_rl_models/implicit_q_learning_iql/iql_logs'
     stats_to_save = {}
 
     for dataset_name, loaders in ((d, l) for d, l in dataloaders.items() if d == dataset):
         print(f"Training IQL on {dataset_name}")
 
-        # Extract metadata
+        # extract metadata
         parts = dataset_name.split('_')
         dataset_type = '_'.join(parts[:2]).lower()  # e.g., 'expert_dataset'
         perturbation_level = parts[-1]  # e.g., '20'
 
-        # Init logs
+        # init logs
         all_actor_losses, all_critic1_losses, all_critic2_losses, all_value_losses = [], [], [], []
         all_val_losses, all_rewards = [], []
         all_actor_steps, all_critic1_steps, all_critic2_steps, all_value_steps = [], [], [], []
@@ -143,7 +161,7 @@ def train_and_evaluate_IQL(dataloaders, epochs, seeds, dataset, env_id, seed, de
                     iql_logger.log(f'{main_tag}/Value Loss', v_loss, value_step)
                     value_step += 1
 
-                    # Log Q-values with a shared step (e.g., critic1_step)
+                    # log Q-values with a shared step (e.g., critic1_step)
                     q_step = critic1_step
                     q_values_by_seed[seed_idx]['avg_pred_q_values'][q_step] = [(c1_q.mean().item() + c2_q.mean().item()) / 2]
                     q_values_by_seed[seed_idx]['avg_target_q_values'][q_step] = [(c1_tgt.mean().item() + c2_tgt.mean().item()) / 2]
@@ -180,7 +198,7 @@ def train_and_evaluate_IQL(dataloaders, epochs, seeds, dataset, env_id, seed, de
                     iql_logger.log(f'{main_tag}/Reward', r, reward_step)
                     reward_step += 1
 
-            # Store all seed data
+            # store all seed data
             all_actor_losses.append(actor_losses)
             all_critic1_losses.append(critic1_losses)
             all_critic2_losses.append(critic2_losses)
@@ -202,7 +220,7 @@ def train_and_evaluate_IQL(dataloaders, epochs, seeds, dataset, env_id, seed, de
             print(f"    ➤ Avg Validation Loss: {np.mean(val_losses):.5f}")
             print(f"    ➤ Avg Reward: {np.mean(rewards):.2f}")
 
-            # Save the model
+            # save the model
             print("Saving the model...")
             model_path = f"{logdir}/{dataset_type}/{perturbation_level}/iql_model_{perturbation_level}_seed{seed_idx + 1}.pth"
             os.makedirs(os.path.dirname(model_path), exist_ok=True)
@@ -236,4 +254,3 @@ def train_and_evaluate_IQL(dataloaders, epochs, seeds, dataset, env_id, seed, de
     print(f"Return Stats saved to {stats_path}")
 
     iql_logger.close()
-

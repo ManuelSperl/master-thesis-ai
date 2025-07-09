@@ -21,23 +21,36 @@ from offline_rl_models.implicit_q_learning_iql.actor import ActorNet
 from offline_rl_models.implicit_q_learning_iql.value import ValueNet
 
 class IQLModel(nn.Module):
+    """
+    Implicit Q-Learning (IQL) model that includes actor, two critics, and a value network.
+    Implements the IQL algorithm with soft updates and advantage-weighted regression.
+    """
     def __init__(self, action_dim, device, global_seed, seed_idx, tau=0.005):
+        """
+        Initializes the IQL model with the given parameters.
+
+        :param action_dim: Dimension of the action space
+        :param device: Device to run the model on (CPU or GPU)
+        :param global_seed: Global seed for reproducibility
+        :param seed_idx: Index of the seed for initializing networks
+        :param tau: Coefficient for soft updates of the target value network
+        """
         super(IQLModel, self).__init__()
         self.device = device
-        self.tau = tau  # Soft update coefficient
+        self.tau = tau  # soft update coefficient
 
         self.actor = ActorNet(action_dim, global_seed, seed_idx).to(device)
         self.critic1 = CriticNet(action_dim, global_seed, seed_idx).to(device)
-        self.critic2 = CriticNet(action_dim, global_seed, seed_idx + 100).to(device)  # Different seed for Critic 2
+        self.critic2 = CriticNet(action_dim, global_seed, seed_idx + 100).to(device)  # different seed for Critic 2
         self.value = ValueNet(global_seed, seed_idx).to(device)
         self.value_target = ValueNet(global_seed, seed_idx).to(device)
-        self.value_target.load_state_dict(self.value.state_dict())  # Initialize target with main value network
-        self.value_target.eval()  # Set target network to eval mode
+        self.value_target.load_state_dict(self.value.state_dict())  # initialize target with main value network
+        self.value_target.eval()  # set target network to eval mode
 
-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=3e-5)  # Lowered from 1e-4
-        self.critic1_optimizer = optim.Adam(self.critic1.parameters(), lr=5e-5)  # Lowered from 1e-4
-        self.critic2_optimizer = optim.Adam(self.critic2.parameters(), lr=5e-5)  # Lowered from 1e-4
-        self.value_optimizer = optim.Adam(self.value.parameters(), lr=5e-5)  # Lowered from 1e-4
+        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=3e-5)
+        self.critic1_optimizer = optim.Adam(self.critic1.parameters(), lr=5e-5)
+        self.critic2_optimizer = optim.Adam(self.critic2.parameters(), lr=5e-5)
+        self.value_optimizer = optim.Adam(self.value.parameters(), lr=5e-5)
 
     def get_action(self, state, eval=False):
         """
@@ -51,11 +64,23 @@ class IQLModel(nn.Module):
             return self.actor.get_action(state, eval=eval)
         
     def soft_update(self, source, target):
+        """
+        Soft update the target network parameters using the source network parameters.
+
+        :param source: Source network (main network)
+        :param target: Target network (to be updated)
+        """
         for param, target_param in zip(source.parameters(), target.parameters()):
             target_param.data.copy_(self.tau * param.data + (1.0 - self.tau) * target_param.data)
 
     def learn(self, experiences):
-        torch.autograd.set_detect_anomaly(False)  # Debug aid — disable in production
+        """
+        Perform a learning step using the provided experiences.
+
+        :param experiences: Tuple of experiences
+        :return: Tuple containing actor loss, critic losses, and value loss
+        """
+        torch.autograd.set_detect_anomaly(False)  # debug aid
 
         states, actions, rewards, next_states, dones = experiences
         states, actions, rewards, next_states, dones = (
@@ -74,19 +99,19 @@ class IQLModel(nn.Module):
 
         self.critic1_optimizer.zero_grad()
         critic1_loss.backward()
-        clip_grad_norm_(self.critic1.parameters(), 5.0)  # Stability fix # changed from 10.0 to 5.0
+        clip_grad_norm_(self.critic1.parameters(), 5.0)  # stability fix
         self.critic1_optimizer.step()
 
         self.critic2_optimizer.zero_grad()
         critic2_loss.backward()
-        clip_grad_norm_(self.critic2.parameters(), 5.0)  # Stability fix
+        clip_grad_norm_(self.critic2.parameters(), 5.0)  # stability fix
         self.critic2_optimizer.step()
 
         # 3. Compute Value Loss
         value_loss = self.value.compute_value_loss(states, actions, self.critic1, self.critic2, expectile=0.7)
         self.value_optimizer.zero_grad()
         value_loss.backward()
-        clip_grad_norm_(self.value.parameters(), 5.0)  # Stability fix
+        clip_grad_norm_(self.value.parameters(), 5.0)  # stability fix
         self.value_optimizer.step()
 
         # 4. Compute Actor Loss (Advantage-Weighted Regression)
@@ -97,7 +122,7 @@ class IQLModel(nn.Module):
             current_value = self.value(states)
             advantage = min_q - current_value
 
-            # Stability Fix: clamp advantage range & temperature 0.1 (was 0.03, in paper)
+            # stability Fix: clamp advantage range & temperature 0.1 (was 0.03, in paper)
             advantage = torch.clamp(advantage, min=-2.0, max=2.0)
             positive_advantage_mask = (advantage > 0).float()
             exp_advantage = torch.clamp(torch.exp(advantage.detach() / 0.1), min=1e-3, max=100.0) * positive_advantage_mask
@@ -110,7 +135,7 @@ class IQLModel(nn.Module):
 
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
-        clip_grad_norm_(self.actor.parameters(), 5.0)  # Stability fix
+        clip_grad_norm_(self.actor.parameters(), 5.0)  # stability fix
         self.actor_optimizer.step()
 
         # 5. Soft update of target value network

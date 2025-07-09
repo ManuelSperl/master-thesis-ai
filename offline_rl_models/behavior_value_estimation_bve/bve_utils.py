@@ -22,6 +22,17 @@ importlib.reload(offline_rl_models.behavior_value_estimation_bve.bve_model)
 from offline_rl_models.behavior_value_estimation_bve.bve_model import BVEModel
 
 def evaluate_BVE_reward(env, agent, n_episodes, device, max_steps_per_episode=1000, debug=False):
+    """
+    Evaluate the BVE agent's performance in the environment.
+
+    :param env: The environment to evaluate the agent in.
+    :param agent: The BVE agent to evaluate.
+    :param n_episodes: Number of episodes to run for evaluation.
+    :param device: Device to run the evaluation on (CPU or GPU).
+    :param max_steps_per_episode: Maximum number of steps per episode.
+    :param debug: If True, print debug information.
+    :return: List of total rewards for each episode.
+    """
     rewards = []    
     agent.eval()
 
@@ -51,6 +62,17 @@ def evaluate_BVE_reward(env, agent, n_episodes, device, max_steps_per_episode=10
     return rewards
 
 def train_and_evaluate_BVE(dataloaders, epochs, seeds, dataset, env_id, seed, device):
+    """
+    Train and evaluate the Behavior Value Estimation (BVE) model on the specified dataset.
+
+    :param dataloaders: Dictionary containing training and validation data loaders.
+    :param epochs: Number of training epochs.
+    :param seeds: Number of random seeds to use for training.
+    :param dataset: Name of the dataset to train on.
+    :param env_id: Environment ID for creating the environment.
+    :param seed: Global seed for reproducibility.
+    :param device: Device to run the training on (CPU or GPU).
+    """
     logdir = 'offline_rl_models/behavior_value_estimation_bve/bve_logs'
     stats_to_save = {}
 
@@ -138,7 +160,7 @@ def train_and_evaluate_BVE(dataloaders, epochs, seeds, dataset, env_id, seed, de
                     bve_logger.log(f'{main_tag}/Reward', r, reward_step)
                     reward_step += 1
 
-            # Save data
+            # save data
             all_train_losses.append(train_losses)
             all_val_losses.append(val_losses)
             all_rewards.append(rewards)
@@ -151,7 +173,7 @@ def train_and_evaluate_BVE(dataloaders, epochs, seeds, dataset, env_id, seed, de
             print(f"    ➤ Avg Val Loss: {np.mean(val_losses):.5f}")
             print(f"    ➤ Avg Reward: {np.mean(rewards):.2f}")
 
-            # Save the model
+            # save the model
             print("Saving the model...")
             model_path = f"{logdir}/{dataset_type}/{perturbation_level}/bve_model_{perturbation_level}_seed{seed_idx + 1}.pth"
             os.makedirs(os.path.dirname(model_path), exist_ok=True)

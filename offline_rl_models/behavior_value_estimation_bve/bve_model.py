@@ -12,14 +12,26 @@ importlib.reload(offline_rl_models.implicit_q_learning_iql.critic)
 from offline_rl_models.implicit_q_learning_iql.critic import CriticNet
 
 class BVEModel(nn.Module):
+    """
+    Behavior Value Estimation (BVE) model for offline reinforcement learning.
+    """
     def __init__(self, action_dim, device, global_seed, trial_idx, tau=0.005):
+        """
+        Initializes the BVE model with the given parameters.
+
+        :param action_dim: Dimension of the action space
+        :param device: Device to run the model on (CPU or GPU)
+        :param global_seed: Global seed for reproducibility
+        :param trial_idx: Index of the trial for initializing networks
+        :param tau: Coefficient for soft updates of the target network
+        """
         super(BVEModel, self).__init__()
         self.device = device
         self.action_dim = action_dim
         self.tau = tau
         self.gamma = 0.99
 
-        # Reuse the critic network as the Q-network
+        # reuse the critic network as the Q-network
         self.q_net = CriticNet(action_dim, global_seed, trial_idx).to(device)
         self.target_q_net = CriticNet(action_dim, global_seed, trial_idx + 100).to(device)
         self.target_q_net.load_state_dict(self.q_net.state_dict())
@@ -28,18 +40,35 @@ class BVEModel(nn.Module):
         self.optimizer = torch.optim.Adam(self.q_net.parameters(), lr=5e-5)
 
     def soft_update(self):
+        """
+        Soft update the target Q-network using the current Q-network parameters.
+        This implements the soft update rule, where θ is the parameters of the current Q-network and θ_target is the parameters of the target Q-network.
+        """
         for param, target_param in zip(self.q_net.parameters(), self.target_q_net.parameters()):
             target_param.data.copy_(self.tau * param.data + (1.0 - self.tau) * target_param.data)
 
     def forward(self, state, action):
+        """
+        Forward pass through the Q-network to compute Q-values for given states and actions.
+
+        :param state: Current state tensor
+        :param action: Action tensor
+        :return: Q-values for the given state-action pairs
+        """
         return self.q_net(state, action)
 
     def get_action(self, state):
+        """
+        Selects the action with the highest Q-value for the given state.
+
+        :param state: Current state tensor
+        :return: Action with the highest Q-value
+        """
         with torch.no_grad():
             batch_size = state.size(0)
             action_range = torch.arange(self.action_dim, device=state.device)
 
-            # Repeat states for each action
+            # repeat states for each action
             state_repeat = state.unsqueeze(1).repeat(1, self.action_dim, 1, 1, 1).view(-1, *state.shape[1:])
             actions = action_range.repeat(batch_size)  # [A, A, ..., A]
 
@@ -79,7 +108,7 @@ class BVEModel(nn.Module):
         with torch.no_grad():
             target_q = self.target_q_net(next_states, next_actions)  # Q_target(s', a')
             target_q = torch.clamp(target_q, min=-300, max=300)
-            target = rewards + self.gamma * (1 - dones) * target_q   # Full target term
+            target = rewards + self.gamma * (1 - dones) * target_q   # full target term
 
         current_q = self.q_net(states, actions)  # Q(s,a)
         loss = F.smooth_l1_loss(current_q, target)

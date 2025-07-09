@@ -18,30 +18,36 @@ class BCModel(nn.Module):
         :param seed_idx: index of the seed for reproducibility
         """
         super(BCModel, self).__init__()
-        # Convolutional layers
+        # convolutional layers
         self.conv1 = nn.Conv2d(3, 32, kernel_size=8, stride=4)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
 
-        # Compute the size of the feature map after the conv layers
+        # compute the size of the feature map after the conv layers
         self.fc_input_dim = self._get_conv_output_dim()
 
-        # Fully connected layers
+        # fully connected layers
         self.fc1 = nn.Linear(self.fc_input_dim, 512)
         self.fc2 = nn.Linear(512, action_dim)
 
-        self.global_seed = global_seed  # Save the global seed as an instance variable
+        self.global_seed = global_seed  # save the global seed as an instance variable
 
-        # Custom weight initialization with seed index
+        # custom weight initialization with seed index
         self.init_weights(seed_idx)
 
     def _get_conv_output_dim(self):
-        # Create a dummy input to pass through conv layers
+        """
+        Computes the output dimension of the convolutional layers.
+        This is done by passing a dummy input through the conv layers to determine the output size.
+        
+        :return: output dimension after the convolutional layers
+        """
+        # create a dummy input to pass through conv layers
         dummy_input = torch.zeros(1, 3, 210, 160)
         x = F.relu(self.conv1(dummy_input))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
-        output_dim = int(np.prod(x.size()[1:]))  # Exclude batch size
+        output_dim = int(np.prod(x.size()[1:]))  # exclude batch size
         return output_dim
 
     def forward(self, state):
@@ -49,13 +55,12 @@ class BCModel(nn.Module):
         Forward pass of the model.
 
         :param state: input state
-
         :return: predicted action logits
         """
         x = F.relu(self.conv1(state))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
-        x = x.view(x.size(0), -1)  # Flatten the tensor
+        x = x.view(x.size(0), -1)  # flatten the tensor
         x = F.relu(self.fc1(x))
         action_logits = self.fc2(x)
         return action_logits
@@ -66,9 +71,9 @@ class BCModel(nn.Module):
 
         :param seed_idx: index of the seed for reproducibility
         """
-        seed = self.global_seed + (seed_idx * 1234)  # Set seed differently for each seed
+        seed = self.global_seed + (seed_idx * 1234)  # set seed differently for each seed
 
-        # Initialize weights with seed
+        # initialize weights with seed
         torch.manual_seed(seed)
         for m in self.modules():
             if isinstance(m, (nn.Linear, nn.Conv2d)):

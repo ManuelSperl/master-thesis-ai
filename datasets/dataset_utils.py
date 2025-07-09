@@ -8,22 +8,31 @@ import torch
 import os
 import gc
 import matplotlib.pyplot as plt
+from itertools import islice
 import gymnasium as gym
 from stable_baselines3.common.utils import set_random_seed
 from torch.utils.data import DataLoader
 from sklearn.model_selection import train_test_split
 import itertools
-from functools import partial  # Import partial for passing arguments to worker_init_fn
+from functools import partial
 
 import importlib
 import datasets.seaquest_dataset
 importlib.reload(datasets.seaquest_dataset)
 
-# Import SeaquestDataset from a separate module
 from datasets.seaquest_dataset import SeaquestDataset
 
 
 def evaluate_dqn_agent(env, model, seed, num_episodes=5):
+    """
+    Evaluates a DQN agent on a given environment for a specified number of episodes.
+    
+    :param env: Gym environment to evaluate the agent on
+    :param model: Trained DQN model to evaluate
+    :param seed: Seed for reproducibility
+    :param num_episodes: Number of episodes to run for evaluation
+    :return: Average reward over the episodes and action counts
+    """
     episode_rewards = []
     action_counts = {}
     episode_idx = 0
@@ -37,14 +46,14 @@ def evaluate_dqn_agent(env, model, seed, num_episodes=5):
         while not done:
             action, _ = model.predict(obs, deterministic=False)
 
-            # Convert action to scalar if it's a NumPy array
+            # convert action to scalar if it's a NumPy array
             if isinstance(action, np.ndarray):
                 action = action.item()
                 
             obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
             total_rewards += reward
-            # Log action
+            # log action
             action_counts[action] = action_counts.get(action, 0) + 1
             
         episode_rewards.append(total_rewards)
@@ -55,7 +64,6 @@ def evaluate_dqn_agent(env, model, seed, num_episodes=5):
     print(f"Action Counts: {action_counts}")
     return average_reward, action_counts
 
-# Define worker_init_fn at the top level
 def worker_init_fn(worker_id, seed):
     """
     Initializes the random seed for each DataLoader worker.
@@ -87,23 +95,21 @@ def create_environment(env_id, seed=None):
 
     return env
 
-
 def set_all_seeds(seed):
     """
     Function that sets a seed for reproducibility.
 
     :param seed: the seed to set
     """
-    random.seed(seed)  # Python random seed
-    np.random.seed(seed)  # NumPy random seed
-    torch.manual_seed(seed)  # PyTorch CPU seed
+    random.seed(seed)  # python random seed
+    np.random.seed(seed)  # numPy random seed
+    torch.manual_seed(seed)  # pyTorch CPU seed
     if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)  # PyTorch GPU seed
-        torch.backends.cudnn.deterministic = True  # Ensures deterministic behavior
-        torch.backends.cudnn.benchmark = False  # Avoids non-deterministic optimizations
+        torch.cuda.manual_seed_all(seed)  # pyTorch GPU seed
+        torch.backends.cudnn.deterministic = True  # ensures deterministic behavior
+        torch.backends.cudnn.benchmark = False  # avoids non-deterministic optimizations
 
-    set_random_seed(seed)  # For stable_baselines3
-
+    set_random_seed(seed)  # for stable_baselines3
 
 def save_dataset(dataset, path, filename):
     """
@@ -113,18 +119,17 @@ def save_dataset(dataset, path, filename):
     :param path: directory where the file will be saved
     :param filename: name of the file to save the dataset to
     """
-    # Ensure the directory exists
+    # ensure the directory exists
     os.makedirs(path, exist_ok=True)
     
-    # Construct the full file path
+    # construct the full file path
     full_path = os.path.join(path, filename)
     
-    # Save the dataset to the specified file
+    # save the dataset to the specified file
     with open(full_path, 'wb') as f:
         pickle.dump(dataset, f)
 
     print(f"Dataset saved to {full_path}")
-
 
 def generate_dataset(env, agent, seed, target_size=150_000, perturbation=False, perturbation_level=0.05, save_path='', file_name=''):
     """
@@ -163,13 +168,13 @@ def generate_dataset(env, agent, seed, target_size=150_000, perturbation=False, 
         episode_transitions = []
 
         while not done:
-            # Predict action using expert agent
+            # predict action using expert agent
             action, _ = agent.predict(obs, deterministic=False)
             action = int(action)
             original_action = action
             perturbed = False
 
-            # Apply perturbation
+            # apply perturbation
             if perturbation and random.random() < perturbation_level:
                 all_actions = list(range(env.action_space.n))
                 all_actions.remove(action)
@@ -177,15 +182,15 @@ def generate_dataset(env, agent, seed, target_size=150_000, perturbation=False, 
                 perturbed = True
                 perturbed_count += 1
 
-            # Step environment
+            # step environment
             new_obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
 
-            # Predict next action (for BVE)
+            # predict next action (for BVE)
             next_action, _ = agent.predict(new_obs, deterministic=False)
             next_action = int(next_action)
-            
-            # Store full transition
+
+            # store full transition
             transition = (obs, action, reward, new_obs, next_action, done, perturbed, original_action)
             episode_transitions.append(transition)
 
@@ -206,13 +211,11 @@ def generate_dataset(env, agent, seed, target_size=150_000, perturbation=False, 
     save_dataset(dataset, save_path, file_name)
     return dataset
 
-
 def load_dataset(filename):
     """
     Loads a dataset from a file.
 
     :param filename: name of the file to load the dataset from
-
     :return: the loaded dataset
     """
     with open(filename, 'rb') as f:
@@ -232,10 +235,15 @@ def print_dataset_samples(name, dataset, num_samples=3):
     
 def preprocess_and_split(data, seed, validation_size=0.1):
     """
-    Groups the dataset into episodes using the 'done' flag, then splits by episode,
-    preserving temporal integrity and preventing leakage across train/val.
+    Preprocesses the dataset by grouping transitions into full episodes and splitting into training and validation sets.
+
+    :param data: List of transitions, where each transition is a tuple of the form:
+        (obs, action, reward, next_obs, next_action, done, perturbed_flag, original_action)
+    :param seed: Seed for reproducibility
+    :param validation_size: Fraction of data to use for validation (Default is 0.1)
+    :return: Tuple of training and validation datasets, each as a list of transitions
     """
-    # Step 1: Group transitions into full episodes
+    # step 1: Group transitions into full episodes
     episodes = []
     current_episode = []
 
@@ -245,14 +253,14 @@ def preprocess_and_split(data, seed, validation_size=0.1):
             episodes.append(current_episode)
             current_episode = []
 
-    # Handle case where last episode is incomplete (no 'done')
+    # handle case where last episode is incomplete (no 'done')
     if current_episode:
         episodes.append(current_episode)
 
-    # Step 2: Split by episode
+    # step 2: Split by episode
     train_eps, val_eps = train_test_split(episodes, test_size=validation_size, random_state=seed)
 
-    # Step 3: Flatten episodes back into transition lists
+    # step 3: Flatten episodes back into transition lists
     train_data = list(itertools.chain.from_iterable(train_eps))
     val_data = list(itertools.chain.from_iterable(val_eps))
 
@@ -290,8 +298,6 @@ def create_dataloaders(train_data, validation_data, batch_size=64, seed=42):
     )
 
     return train_loader, validation_loader
-
-from itertools import islice
 
 def analyze_action_distribution(dataset):
     """
@@ -332,7 +338,7 @@ def validate_dataset(path, verbose=True):
     perturbed_count = 0
     wrong_perturbs = 0
     diagonal_hits = 0
-    action_space_size = 18  # Seaquest
+    action_space_size = 18  # seaquest
 
     for t in dataset:
         obs, action, reward, next_obs, next_action, done, perturbed, original_action = t
@@ -360,7 +366,7 @@ def validate_dataset(path, verbose=True):
     else:
         print("Perturbation logic valid.")
 
-    # Episode statistics
+    # episode statistics
     rewards = []
     lengths = []
     current_reward = 0
@@ -406,7 +412,6 @@ def validate_dataset(path, verbose=True):
         print(f"    ➤ Last episode length  : {result['last_episode_length'] if result['cut_off_last_episode'] else 'N/A'}")
 
     return is_valid, result
-
 
 def load_and_prepare_dataset(dataset_path, batch_size=64, seed=0, validation_size=0.1, dataloaders_dict=None):
     """

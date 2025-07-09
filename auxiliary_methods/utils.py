@@ -48,38 +48,40 @@ def show_videos(video_data):
     else:
         print("Could not find or read any videos from the provided data.")
 
-
-# Updated create_env function
 def create_env(logger, seed, env_id='', capture_video=True, dataset_name='', seed_number=''):
-    # Determine video directory
+    """
+    Create a Gym environment with video recording and episode statistics.
+
+    :param logger: Logger instance for saving videos and statistics.
+    :param seed: Seed for reproducibility.
+    :param env_id: Environment ID to create.
+    :param capture_video: Whether to capture video of the environment.
+    :param dataset_name: Name of the dataset for video directory.
+    :param seed_number: Seed number for the dataset.
+    :return: Tuple of the created environment and the number of actions.
+    """
+    # determine video directory
     video_dir = logger.get_video_dir(dataset_name, seed_number)
     os.makedirs(video_dir, exist_ok=True)
 
-    # Create environment
+    # create environment
     env = gym.make(env_id, render_mode='rgb_array')
 
-    # Set render_fps
+    # set render_fps
     if 'render_fps' not in env.metadata or env.metadata['render_fps'] is None:
         env.metadata['render_fps'] = 30  # Set desired FPS
 
-    # Apply CustomRecordVideo before RecordEpisodeStatistics
     if capture_video:
         env = RecordVideo(env, video_dir, episode_trigger=lambda idx: True, disable_logger=True)
     
-    # Apply other wrappers
     env = RecordEpisodeStatistics(env)
 
-    # Set seed for reproducibility
+    # set seed for reproducibility
     env.reset(seed=seed)
     env.action_space.seed(seed)
     env.observation_space.seed(seed)
 
-    # Diagnostics to understand action space
-    #print("Action Space Type:", type(env.action_space))
-    #print("Determined Action Size:", env.action_space.n)
-
     return env, env.action_space.n
-
 
 def save_return_stats(data, filename):
     """
@@ -88,7 +90,7 @@ def save_return_stats(data, filename):
     :param loss_data: Dictionary containing the loss curves data.
     :param filename: Name of the file to save the loss data.
     """
-    os.makedirs(os.path.dirname(filename), exist_ok=True)  # Ensure directory exists
+    os.makedirs(os.path.dirname(filename), exist_ok=True)  # ensure directory exists
     with open(filename, 'wb') as f:
         pickle.dump(data, f)
 
