@@ -85,10 +85,10 @@ def create_env(logger, seed, env_id='', capture_video=True, dataset_name='', see
 
 def save_return_stats(data, filename):
     """
-    Save the IQL return stats data to a file.
+    Save the return stats data to a file.
     
-    :param loss_data: Dictionary containing the loss curves data.
-    :param filename: Name of the file to save the loss data.
+    :param loss_data: Dictionary containing the data.
+    :param filename: Name of the file to save the data.
     """
     os.makedirs(os.path.dirname(filename), exist_ok=True)  # ensure directory exists
     with open(filename, 'wb') as f:

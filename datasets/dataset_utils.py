@@ -67,7 +67,6 @@ def evaluate_dqn_agent(env, model, seed, num_episodes=5):
 def worker_init_fn(worker_id, seed):
     """
     Initializes the random seed for each DataLoader worker.
-    This function needs to be at the top level to be picklable.
 
     :param worker_id: ID of the worker
     :param seed: seed for random state to ensure reproducibility
@@ -80,7 +79,6 @@ def worker_init_fn(worker_id, seed):
 def create_environment(env_id, seed=None):
     """
     Creates a raw Gym environment (no wrappers) for offline RL (BC, IQL, BVE) and dataset generation.
-    This preserves raw RGB (210x160) observations and does not apply any preprocessing.
 
     :param env_id: Gym environment ID (e.g., "SeaquestNoFrameskip-v4")
     :param seed: Seed for reproducibility
@@ -97,7 +95,7 @@ def create_environment(env_id, seed=None):
 
 def set_all_seeds(seed):
     """
-    Function that sets a seed for reproducibility.
+    Function that sets seed's for reproducibility.
 
     :param seed: the seed to set
     """

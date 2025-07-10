@@ -9,3 +9,4 @@
 offline_rl_models/behavioral_cloning_bc/bc_logs/
 offline_rl_models/implicit_q_learning_iql/iql_logs/
 offline_rl_models/behavior_value_estimation_bve/bve_logs/
+datasets/agent_checkpoints/

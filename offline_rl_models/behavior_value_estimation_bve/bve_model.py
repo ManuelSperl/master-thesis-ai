@@ -42,7 +42,8 @@ class BVEModel(nn.Module):
     def soft_update(self):
         """
         Soft update the target Q-network using the current Q-network parameters.
-        This implements the soft update rule, where θ is the parameters of the current Q-network and θ_target is the parameters of the target Q-network.
+        This implements the soft update rule, where θ is the parameters of the 
+        current Q-network and θ_target is the parameters of the target Q-network.
         """
         for param, target_param in zip(self.q_net.parameters(), self.target_q_net.parameters()):
             target_param.data.copy_(self.tau * param.data + (1.0 - self.tau) * target_param.data)
